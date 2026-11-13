@@ -10,13 +10,13 @@
   [hidden] { display:none !important; }
   html, body { height:100%; }
   body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.4 Ubuntu, "Segoe UI", system-ui, sans-serif; display:flex; flex-direction:column; }
-  .top { display:flex; align-items:center; gap:6px; padding:6px 8px 0; flex-wrap:wrap; border-bottom:1px solid var(--line); background:#fff; }
-  .brand { font-weight:600; font-size:13px; margin-right:4px; }
-  .brand b { color:var(--accent); }
-  .tabs { display:flex; gap:2px; flex-wrap:wrap; flex:1; }
-  .tabs button { font:inherit; font-size:12px; padding:5px 9px; border:1px solid var(--line); border-bottom:0; background:var(--bg); color:var(--ink); cursor:pointer; border-radius:0; margin-bottom:-1px; }
-  .tabs button.on { background:#fff; border-color:var(--ink) var(--ink) #fff; font-weight:600; }
-  select { font:inherit; font-size:12px; padding:2px 4px; border:1px solid var(--line); background:#fff; border-radius:0; margin-bottom:4px; }
+  .top { display:flex; align-items:flex-end; gap:6px; padding:4px 6px 0; border-bottom:1px solid var(--line); background:#fff; }
+  .brand { font-weight:700; font-size:14px; color:var(--accent); padding:0 2px 5px; }
+  /* one row; scrolls sideways when the side panel is narrow */
+  .tabs { display:flex; gap:2px; flex:1; overflow-x:auto; scrollbar-width:thin; }
+  .tabs button { flex:none; font:inherit; font-size:12px; padding:4px 8px; border:1px solid var(--line); border-bottom:0; background:var(--bg); color:var(--ink); cursor:pointer; border-radius:0; white-space:nowrap; }
+  .tabs button.on { background:#fff; border-color:var(--ink); font-weight:600; box-shadow:inset 0 -2px 0 var(--accent); }
+  .retry { margin:8px 12px; font:inherit; padding:5px 10px; border:1px solid var(--ink); background:var(--ink); color:#fff; cursor:pointer; border-radius:0; }
   .status { font-size:12px; color:var(--muted); padding:8px 12px; }
   .status.bad { color:var(--bad); }
   .frames { flex:1; position:relative; min-height:0; }
@@ -24,12 +24,11 @@
 </style>
 </head>
 <body>
-<div class="top"><span class="brand"><b>A</b>rsten</span><div class="tabs" id="tabs"></div>
-  <select id="selLang" title="Language / Език"><option value="bg">BG</option><option value="en">EN</option></select></div>
+<div class="top"><span class="brand" title="Arsten">A</span><div class="tabs" id="tabs"></div></div>
 <div id="status" class="status">Connecting to Trimble Connect…</div>
 <div class="frames" id="frames"></div>
 <script src="https://cdn.jsdelivr.net/npm/trimble-connect-workspace-api@0.3.38/dist/iife/trimbleconnect.workspace.api.js" integrity="sha384-lFiNt/56q6HnUNbuy0WHO3NP6BkQjY4EH8+5eELYVfnhkB42snRTmSa3UOAlX9gg" crossorigin="anonymous"></script>
-<script src="arsten-access.js?v=9"></script>
-<script src="app.js?v=4"></script>
+<script src="arsten-access.js?v=10"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

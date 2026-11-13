@@ -22,7 +22,8 @@
   ];
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  let lang = (() => { try { return localStorage.getItem("arsten.shell.lang") || "bg"; } catch { return "bg"; } })();
+  // language: the one chosen inside the panels (same site, same storage), Bulgarian by default
+  let lang = (() => { try { return localStorage.getItem("arsten.pourStatus.lang") || localStorage.getItem("arsten.acceptance.lang") || "bg"; } catch { return "bg"; } })();
   const L2 = (b, e) => (lang === "bg" ? b : e);
   const state = { api: null, access: null, tabs: [], active: null, loaded: new Set() };
   const setStatus = (t, bad) => { const s = $("status"); s.hidden = !t; s.textContent = t || ""; s.className = "status" + (bad ? " bad" : ""); };
@@ -35,7 +36,6 @@
   }
 
   function render() {
-    $("selLang").value = lang;
     $("tabs").innerHTML = state.tabs.map((t) => `<button data-tab="${t.id}" class="${state.active === t.id ? "on" : ""}">${esc(lang === "bg" ? t.bg : t.en)}</button>`).join("");
     for (const t of state.tabs) {
       let f = document.getElementById("f_" + t.id);
@@ -55,7 +55,6 @@
     render();
   }
   $("tabs").addEventListener("click", (e) => { const b = e.target.closest("button[data-tab]"); if (b) open(b.dataset.tab); });
-  $("selLang").onchange = (e) => { lang = e.target.value; try { localStorage.setItem("arsten.shell.lang", lang); } catch {} render(); };
 
   // Local test only (test/host.html on localhost): one probe tab, no access check.
   const PROBE = /^localhost$|^127\.0\.0\.1$/.test(location.hostname) && /[?&]probe\b/.test(location.search);
@@ -68,7 +67,14 @@
     tokens = ArstenAccess.tokenGetter(api);
     const access = await ArstenAccess.check({ api, getToken: tokens.getToken, app: "execution" });
     state.access = access;
-    if (access.role === "unknown" || access.role === "none") { ArstenAccess.renderDenied(document.body, lang, access); return; }
+    if (access.role === "unknown") {
+      // right after "Allow extension" Connect's first token can be refused (401): offer a retry instead of a dead end
+      ArstenAccess.renderDenied(document.body, lang, access);
+      const b = document.createElement("button"); b.className = "retry"; b.textContent = L2("Опитай пак", "Try again"); b.onclick = () => location.reload();
+      document.body.appendChild(b);
+      return;
+    }
+    if (access.role === "none") { ArstenAccess.renderDenied(document.body, lang, access); return; }
     state.tabs = TABS.filter((t) => ArstenAccess.allows(t.app, access.role) || (t.app === "acceptance" && ArstenAccess.can(access, "approve")));
     if (!state.tabs.length) { ArstenAccess.renderDenied(document.body, lang, access); return; }
     setStatus("");
