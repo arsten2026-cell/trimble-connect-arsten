@@ -7,18 +7,18 @@
 // How: this page connects to Trimble Connect once and re-exposes that Workspace API to the tools, which run unchanged
 // in iframes inside it (TrimbleConnectWorkspace.expose; Connect events are forwarded to them). Each tool still does its
 // own access check; the tiles follow the same roles (shared/arsten-access.js):
-//   Бетон (Pour status), Етикети тактове (Pour tags), Бет. елементи (Cast unit tags) -> "execution"   (admin, GC)
+//   Монолитен бетон (Pour status), Етикети тактове (Pour tags), Бет. елементи (Cast unit tags) -> "execution"   (admin, GC)
 //   Стомана (Assembly status)                                                       -> "assembly"    (admin, GC, designers)
-//   Приемане (acceptance)                                                           -> "acceptance"  (admin, GC, designers)
-//   Напредък (Project status)                                                       -> "projectStatus" (admin, GC, client)
+//   Авторски надзор (acceptance)                                                           -> "acceptance"  (admin, GC, designers)
+//   Статус (Project status)                                                       -> "projectStatus" (admin, GC, client)
 (function () {
   "use strict";
   const BASE = "https://arsten2026-cell.github.io/";
   const TOOLS = [
-    { id: "pour", app: "execution", repo: "trimble-connect-pour-status", bg: "Бетон", en: "Concrete", sub: ["Тактове, снимки, заявки", "Pours, photos, requests"] },
-    { id: "accept", app: "acceptance", repo: "trimble-connect-acceptance", bg: "Приемане", en: "Acceptance", sub: ["Кофраж и армировка", "Formwork and rebar"] },
+    { id: "pour", app: "execution", repo: "trimble-connect-pour-status", bg: "Монолитен бетон", en: "Cast-in-place concrete", sub: ["Тактове, снимки, заявки", "Pours, photos, requests"] },
+    { id: "accept", app: "acceptance", repo: "trimble-connect-acceptance", bg: "Авторски надзор", en: "Design supervision", sub: ["Приемане на кофраж и армировка", "Formwork and rebar acceptance"] },
     { id: "steel", app: "assembly", repo: "trimble-connect-assembly-status", bg: "Стомана", en: "Steel", sub: ["Монтаж, доставки, болтове", "Erection, deliveries, bolts"] },
-    { id: "progress", app: "projectStatus", repo: "trimble-connect-project-status", bg: "Напредък", en: "Progress", sub: ["Статус на проекта", "Project status"] },
+    { id: "progress", app: "projectStatus", repo: "trimble-connect-project-status", bg: "Статус", en: "Status", sub: ["Напредък на проекта", "Project progress"] },
     { id: "pourtags", app: "execution", repo: "trimble-connect-pour-tags", bg: "Етикети тактове", en: "Pour tags", sub: ["Номера на тактовете", "Pour numbers"] },
     { id: "cutags", app: "execution", repo: "trimble-connect-castunit-tags", bg: "Бет. елементи", en: "Cast units", sub: ["Марки и армировка", "Marks and rebar"] },
   ];
