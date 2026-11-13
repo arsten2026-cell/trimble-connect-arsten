@@ -1,7 +1,9 @@
 {
-  "title": "Arsten",
+  "title": "Arsten / MULTIPLAN",
   "url": "https://arsten2026-cell.github.io/trimble-connect-arsten/index.html",
   "icon": "https://arsten2026-cell.github.io/trimble-connect-arsten/icon.svg",
-  "description": "All Arsten tools in one panel: concrete pour status with photos, acceptance by the structural designer, steel erection, project progress, pour and cast unit tags. Tabs follow the user's role.",
-  "extensionType": ["3dviewer"]
+  "description": "All Arsten / MULTIPLAN tools in one panel: concrete pour status with photos, acceptance by the structural designer, steel erection, project progress, pour and cast unit tags. Tabs follow the user's role.",
+  "extensionType": [
+    "3dviewer"
+  ]
 }
