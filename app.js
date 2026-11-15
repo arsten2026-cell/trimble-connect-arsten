@@ -15,9 +15,9 @@
   "use strict";
   const BASE = "https://arsten2026-cell.github.io/";
   const TOOLS = [
-    { id: "pour", app: "execution", repo: "trimble-connect-pour-status", bg: "Монолитен бетон", en: "Cast-in-place concrete", sub: ["Тактове, снимки, заявки", "Pours, photos, requests"] },
+    { id: "pour", stagesFirst: true, app: "execution", repo: "trimble-connect-pour-status", bg: "Монолитен бетон", en: "Cast-in-place concrete", sub: ["Тактове, снимки, заявки", "Pours, photos, requests"] },
     { id: "accept", app: "acceptance", repo: "trimble-connect-acceptance", bg: "Авторски надзор", en: "Design supervision", sub: ["Приемане на кофраж и армировка", "Formwork and rebar acceptance"] },
-    { id: "steel", app: "assembly", repo: "trimble-connect-assembly-status", bg: "Стомана", en: "Steel", sub: ["Монтаж, доставки, болтове", "Erection, deliveries, bolts"] },
+    { id: "steel", stagesFirst: true, app: "assembly", repo: "trimble-connect-assembly-status", bg: "Стомана", en: "Steel", sub: ["Монтаж, доставки, болтове", "Erection, deliveries, bolts"] },
     { id: "progress", app: "projectStatus", repo: "trimble-connect-project-status", bg: "Статус", en: "Status", sub: ["Напредък на проекта", "Project progress"] },
     { id: "pourtags", app: "execution", repo: "trimble-connect-pour-tags", bg: "Етикети тактове", en: "Pour tags", sub: ["Номера на тактовете", "Pour numbers"] },
     { id: "cutags", app: "execution", repo: "trimble-connect-castunit-tags", bg: "Бетонови елементи", en: "Cast units", sub: ["Марки и армировка", "Marks and rebar"] },
@@ -81,10 +81,12 @@
     state.view = id;
     render();
   }
-  /** Start-screen click: a tool with stages first shows them; without stages it opens straight away. */
+  /** Start-screen click: Монолитен бетон and Стомана always open on their stages (user, 15.11.2026); the other tools
+   *  only when they have stages, else they open straight away. */
   function openTool(id) {
     if (!state.allowed.has(id)) return;
-    if (ST.forTool(state.stages, id).length) { state.stageTool = id; state.form = null; state.view = "stages"; render(); }
+    const t = state.tools.find((x) => x.id === id) || {};
+    if (t.stagesFirst || ST.forTool(state.stages, id).length) { state.stageTool = id; state.form = null; state.view = "stages"; render(); }
     else open(id);
   }
   $("tiles").addEventListener("click", (e) => { const b = e.target.closest("button[data-open]"); if (b && !b.disabled) openTool(b.dataset.open); });
