@@ -134,20 +134,35 @@
     setStatus(L2("Зареждане на ", "Loading ") + stage.name + "…");
     try {
       let failed = [];
-      if (stage.kind === "view") await api.view.selectView(stage.viewId);
-      else {
+      if (stage.kind === "view") {
+        await api.view.selectView(stage.viewId);
+        // a saved view sets its own models: no other tool's stage can be assumed current any more (round 3, L5)
+        for (const t of Object.keys(state.currentStage || {})) if (t !== tool) { delete state.current[t]; delete state.currentStage[t]; }
+      } else {
         const p = ST.plan(stage, (await api.viewer.getModels()) || []);
-        if (p.load.length) await api.viewer.toggleModel(p.load, true, true);
+        // zoom to the models once, with the last load call, instead of a camera jump per model (round 3, L4)
+        const steps = (p.load.length ? 1 : 0) + p.missing.length;
+        let step = 0;
+        if (p.load.length) await api.viewer.toggleModel(p.load, true, ++step === steps);
         // a model not in the viewer's list yet can still be loaded by its file id; one at a time, so a model deleted
         // from the project does not stop the rest of the stage (review round 2, #6)
         for (const m of p.missing) {
-          try { await api.viewer.toggleModel([m.id], true, true); } catch (e) { failed.push(m); }
+          try { await api.viewer.toggleModel([m.id], true, ++step === steps); } catch (e) { failed.push(m); }
         }
         if (p.unload.length) await api.viewer.toggleModel(p.unload, false);
+        // a deleted file id may be ignored silently instead of refused: report stage models the viewer lists as not
+        // loaded. Models it does not list are not reported: getModels is lazy and may not list them yet (round 4, L6)
+        try {
+          const now = new Map(((await api.viewer.getModels()) || []).map((m) => [m.id, m.state]));
+          for (const m of stage.models || []) if (!failed.includes(m) && now.get(m.id) === "unloaded") failed.push(m);
+        } catch {}
+        // the zoom was meant for the last load call; if that one failed, zoom to a model that did load (round 4, L7)
+        const okIds = (stage.models || []).filter((m) => !failed.includes(m)).map((m) => m.id);
+        if (failed.length && steps && okIds.length) { try { await api.viewer.toggleModel([okIds[okIds.length - 1]], true, true); } catch {} }
         // other tools' stages whose models were just unloaded are no longer current (#13)
         const want = new Set((stage.models || []).map((m) => m.id));
         for (const [t, s] of Object.entries(state.currentStage || {})) {
-          if (t !== tool && s && s.kind !== "view" && (s.models || []).some((m) => !want.has(m.id))) { delete state.current[t]; delete state.currentStage[t]; }
+          if (t !== tool && s && (s.kind === "view" || (s.models || []).some((m) => !want.has(m.id)))) { delete state.current[t]; delete state.currentStage[t]; }
         }
       }
       setStatus(failed.length ? L2("Не можаха да се заредят (изтрити или преместени?): ", "Could not be loaded (deleted or moved?): ")
@@ -239,8 +254,8 @@
       const ticks = box.querySelectorAll(".opts input"); if (ticks.length) f.chosen = [...ticks].filter((c) => c.checked).map((c) => c.value); };
     box.querySelectorAll("input[name=fKind]").forEach((r) => { r.onchange = () => { keep(); f.kind = r.value; renderForm(); }; });
     $("fCancel").onclick = () => { state.form = null; renderForm(); };
-    $("fSave").onclick = () => saveForm().catch((e) => setStatus(((e && e.message) || e), true));
-    if ($("fDel")) $("fDel").onclick = () => removeStage(f.stage).catch((e) => setStatus(((e && e.message) || e), true));
+    $("fSave").onclick = () => saveForm().catch((e) => setStatus(saveError(e), true));
+    if ($("fDel")) $("fDel").onclick = () => removeStage(f.stage).catch((e) => setStatus(saveError(e), true));
   }
   /** The project's folders with their model files, as in Connect's Models panel; folders open where a chosen model is. */
   function modelTree(f, chosen) {
@@ -268,13 +283,30 @@
     if (state.busy) return;
     state.busy = true;
     try {
+      state.saveSeq = (state.saveSeq || 0) + 1;
       state.stages = await state.store.save((cur) => {
         // editing a stage another manager deleted meanwhile must not bring it back (#14)
         if (f.stage && !cur.some((x) => x.id === stage.id)) throw new Error(L2("Етапът е изтрит от друг потребител.", "The stage was deleted by someone else."));
-        return cur.filter((x) => x.id !== stage.id).concat(stage);
+        if (!f.stage) return cur.concat(stage);
+        // ... nor silently undo another manager's edit of the same stage (round 3, L6)
+        const stored = cur.find((x) => x.id === stage.id);
+        const mine = Object.assign({}, stored, stage);   // a retry after our own write (round 4, L5)
+        if (JSON.stringify(stored) !== JSON.stringify(f.stage) && JSON.stringify(stored) !== JSON.stringify(mine)) throw new Error(L2("Етапът е променен от друг потребител – отворете го отново.", "The stage was changed by someone else – open it again."));
+        // replaced in place (keeps the order and any fields this version does not know)
+        return cur.map((x) => (x.id === stage.id ? Object.assign({}, x, stage) : x));
       });
+      state.saveSeq++;
       state.form = null; setStatus(L2("Етапът е запазен.", "Stage saved.")); render();
-    } finally { state.busy = false; }
+    } catch (e) {
+      if (e && e.current) { state.stages = e.current; state.form = null; render(); }   // reopen gives the stored version (round 4, L1)
+      setStatus(saveError(e), true);
+    }
+    finally { state.busy = false; }
+  }
+  /** A refused save as a sentence: 403 = no Edit right on the Stages definition in the library (round 3, L2). */
+  function saveError(e) {
+    if (e && e.status === 403) return L2("Нямате права да променяте етапите (библиотека CIP/Монолитно, дефиниция Stages).", "You may not change stages (library CIP/Монолитно, definition Stages).");
+    return (e && e.message) || String(e);
   }
   /** Delete with a confirm step on the button itself: window.confirm can be blocked inside Connect's iframe (P2). */
   async function removeStage(stage) {
@@ -288,10 +320,13 @@
     if (state.busy) return;
     state.busy = true;
     try {
+      state.saveSeq = (state.saveSeq || 0) + 1;
       state.stages = await state.store.save((cur) => cur.filter((x) => x.id !== stage.id));
+      state.saveSeq++;
       if (state.currentStage) for (const t of Object.keys(state.currentStage)) if (state.currentStage[t] && state.currentStage[t].id === stage.id) { delete state.currentStage[t]; delete state.current[t]; }
       state.form = null; setStatus(""); render();
-    } finally { state.busy = false; }
+    } catch (e) { setStatus(saveError(e), true); }
+    finally { state.busy = false; }
   }
   async function loadStages() {
     const local = PROBE;
@@ -299,9 +334,12 @@
     state.store = ST.store({ client, projectId: (state.project && state.project.id) || "probe", user: state.user, local });
     await refreshStages();
   }
+  /** Re-read the stages. A result is dropped when a save or delete started or ended meanwhile: it would put the list
+   *  from before that save back on screen (review round 3, M9). */
   async function refreshStages() {
     if (!state.store) return;
-    try { state.stages = await state.store.load(); }
+    const seq = state.saveSeq || 0;
+    try { const list = await state.store.load(); if ((state.saveSeq || 0) === seq && !state.busy) state.stages = list; }
     catch (e) { console.warn(e); if (!state.stages) state.stages = []; }   // keep what was shown; the screen shows the error
   }
 

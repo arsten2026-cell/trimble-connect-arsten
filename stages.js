@@ -84,16 +84,27 @@
         if (client && !local) {
           try {
             const found = await client.findLibrary(projectId, LIB_NAMES);
-            if (!found.lib) { writable = false; error = "no-library"; return []; }
+            // no library (or a passing 403/404 that findLibrary swallows): an error, so a refresh keeps the list on
+            // screen instead of emptying it (review round 3, L3)
+            if (!found.lib) { const e = new Error("no-library"); e.code = "no-library"; throw e; }
             lib = found.lib;
             writable = false;
             try { await client.ensureDefinition(lib.id, definition()); writable = true; } catch (e) { if (e.status !== 403) throw e; }
             const got = await client.readMany(lib.id, DEF_ID, [link(projectId)]);
             shared = true;
+            // No record yet: create an empty one now (long before anyone saves), so every save carries a version and a
+            // second manager's save is refused and re-applied instead of overwriting the first stages (round 3, M4).
+            if (writable && !got.has(link(projectId))) {
+              try {
+                const cur = await client.readOne(lib.id, DEF_ID, link(projectId));
+                if (cur && cur.props) return parse(cur.props.json);   // batch-get missed it, the record exists (round 4, L3)
+                await client.writeIfUnchanged(lib.id, DEF_ID, link(projectId), { json: "[]", updated: new Date().toISOString().slice(0, 16).replace("T", " "), by: user || "?" }, cur ? cur.v : undefined);
+              } catch (e) { console.warn("stages: could not create the empty record", e); }
+            }
             return parse((got.get(link(projectId)) || {}).json);
           } catch (e) {
             console.warn("stages: shared store not available", e);
-            writable = false; shared = false; error = (e && e.message) || String(e);
+            writable = false; shared = false; lib = null; error = (e && e.message) || String(e);
             throw e;
           }
         }
@@ -106,19 +117,32 @@
        * applied again on top of their list. change may throw to refuse (e.g. the stage was deleted meanwhile).
        */
       async save(change) {
-        if (shared && lib) {
+        const L = lib;   // a refresh failing meanwhile resets `lib`; this save keeps the library it started with (round 4, L4)
+        if (shared && L) {
           for (let attempt = 0; ; attempt++) {
-            const cur = await client.readOne(lib.id, DEF_ID, link(projectId));
-            const next = change(parse(cur && cur.props ? cur.props.json : ""));
+            const cur = await client.readOne(L.id, DEF_ID, link(projectId));
+            const list = parse(cur && cur.props ? cur.props.json : "");
+            let next;
+            // a refusal carries the list as it is stored now, so the screen can show it (round 4, L1)
+            try { next = change(list); } catch (e) { e.current = list; throw e; }
             const props = { json: JSON.stringify(next), updated: new Date().toISOString().slice(0, 16).replace("T", " "), by: user || "?" };
-            try { await client.writeIfUnchanged(lib.id, DEF_ID, link(projectId), props, cur ? cur.v : undefined); return next; }
+            try { await client.writeIfUnchanged(L.id, DEF_ID, link(projectId), props, cur ? cur.v : undefined); }
             catch (e) { if ((e.status === 412 || e.status === 409) && attempt < 3) continue; throw e; }
+            // Without a version (the very first save, or a service that returns none) the write is a plain merge: two
+            // managers creating the first stages at the same moment would overwrite each other. Read back and apply
+            // the change again on top of what is stored (review round 3, M4).
+            if (!cur || cur.v === undefined || cur.v === null) {
+              const back = await client.readOne(L.id, DEF_ID, link(projectId));
+              if (back && back.props && back.props.json !== props.json && attempt < 3) continue;
+            }
+            return next;
           }
         }
         if (!local) throw new Error(error || "stages store not loaded");
         let cur = [];
         try { cur = parse(localStorage.getItem(key)); } catch {}
-        const next = change(cur);
+        let next;
+        try { next = change(cur); } catch (e) { e.current = cur; throw e; }
         try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
         return next;
       },
