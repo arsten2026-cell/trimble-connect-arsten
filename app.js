@@ -116,7 +116,10 @@
       if (stage.kind === "view") await api.view.selectView(stage.viewId);
       else {
         const p = ST.plan(stage, (await api.viewer.getModels()) || []);
-        if (p.load.length) await api.viewer.toggleModel(p.load, true, true);
+        // a model that is not in the viewer's list yet can still be loaded by its file id
+        const load = p.load.concat(p.missing.map((m) => m.id));
+        p.missing = [];
+        if (load.length) await api.viewer.toggleModel(load, true, true);
         if (p.unload.length) await api.viewer.toggleModel(p.unload, false);
         if (p.missing.length) setStatus(L2("Липсват модели: ", "Missing models: ") + p.missing.map((m) => m.name).join(", "), true);
         else setStatus("");
@@ -140,11 +143,42 @@
   });
   $("stTiles").addEventListener("keydown", (e) => { if (e.key === "Enter") { const t = e.target.closest("[role=button]"); if (t) t.click(); } });
 
+  /** Every 3D model file in the project (viewer.getModels() lists only the models already in the viewer), with its
+   *  folder; state from the viewer where it knows it. One Core API call (files/fs/snapshot), paged. */
+  const MODEL_EXT = /\.(ifc|ifczip|trb|tekla|rvt|nwc|nwd|skp|dwg)$/i;
+  async function projectModels() {
+    const api = state.api;
+    let inViewer = [];
+    try { inViewer = (await api.viewer.getModels()) || []; } catch {}
+    if (PROBE || !state.project) return inViewer.filter((m) => ["loaded", "assimilated", "unloaded"].includes(m.state));
+    const base = ArstenAccess.coreBase(state.project.location);
+    const items = [];
+    let url = `${base}files/fs/snapshot?projectId=${encodeURIComponent(state.project.id)}`;
+    for (let guard = 0; url && guard < 50; guard++) {
+      let res = null;
+      for (let attempt = 0; attempt < 2 && !res; attempt++) {
+        const r = await fetch(url, { headers: { Authorization: "Bearer " + (await tokens.getToken(attempt > 0)) } });
+        if (r.status === 401 && attempt === 0) continue;
+        if (!r.ok) throw new Error("files/fs/snapshot: " + r.status);
+        res = await r.json();
+      }
+      if (Array.isArray(res)) { items.push(...res); break; }
+      items.push(...((res && res.items) || []));
+      url = res && res.next ? (/^https?:/.test(res.next) ? res.next : base + String(res.next).replace(/^\/+/, "")) : null;
+    }
+    const byId = new Map(items.map((x) => [x.id, x]));
+    const state0 = new Map(inViewer.map((m) => [m.id, m.state]));
+    return items.filter((x) => String(x.tp).toUpperCase() === "FILE" && !x.del && MODEL_EXT.test(x.nm || ""))
+      .map((x) => ({ id: x.id, name: x.nm, folder: (byId.get(x.pid) || {}).nm || "", state: state0.get(x.id) || "unloaded" }))
+      .sort((a, b) => (a.folder + a.name).localeCompare(b.folder + b.name));
+  }
+
   // form: name, models (tick boxes) or a saved view
   async function startForm(stage) {
     const api = state.api;
     let models = [], views = [];
-    try { models = ((await api.viewer.getModels()) || []).filter((m) => ["loaded", "assimilated", "unloaded"].includes(m.state)); } catch {}
+    try { models = await projectModels(); }
+    catch (e) { console.warn(e); try { models = ((await api.viewer.getModels()) || []).filter((m) => ["loaded", "assimilated", "unloaded"].includes(m.state)); } catch {} }
     try { views = (await api.view.getViews()) || []; } catch {}
     state.form = { stage, models, views, kind: (stage && stage.kind) || "models" };
     renderForm();
@@ -160,7 +194,7 @@
       <div class="row"><label><input type="radio" name="fKind" value="models"${f.kind === "models" ? " checked" : ""}> ${esc(L2("Модел(и)", "Model(s)"))}</label>
         <label><input type="radio" name="fKind" value="view"${f.kind === "view" ? " checked" : ""}> ${esc(L2("Изглед", "View"))}</label></div>
       ${f.kind === "models"
-        ? `<label>${esc(L2("Модели", "Models"))}</label><div class="opts">${f.models.map((m) => `<label><input type="checkbox" value="${esc(m.id)}" data-name="${esc(m.name)}"${chosen.has(m.id) ? " checked" : ""}> ${esc(m.name)}</label>`).join("") || esc(L2("Няма модели.", "No models."))}</div>`
+        ? `<label>${esc(L2("Модели", "Models"))}</label><div class="opts">${f.models.map((m) => `<label><input type="checkbox" value="${esc(m.id)}" data-name="${esc(m.name)}"${chosen.has(m.id) ? " checked" : ""}> ${esc(m.name)}${m.folder ? ` <span style="color:var(--muted);font-size:11px">(${esc(m.folder)})</span>` : ""}</label>`).join("") || esc(L2("Няма модели.", "No models."))}</div>`
         : `<label>${esc(L2("Изглед", "View"))}</label><select id="fView">${f.views.map((v) => `<option value="${esc(v.id)}"${s.viewId === v.id ? " selected" : ""}>${esc(v.name)}</option>`).join("")}</select>
            ${f.views.length ? "" : `<div class="sub">${esc(L2("Няма запазени изгледи в проекта.", "No saved views in the project."))}</div>`}`}
       <div class="acts"><button id="fSave">${esc(L2("Запази", "Save"))}</button><button class="sec" id="fCancel">${esc(L2("Отказ", "Cancel"))}</button>
