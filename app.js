@@ -168,9 +168,10 @@
     }
     const byId = new Map(items.map((x) => [x.id, x]));
     const state0 = new Map(inViewer.map((m) => [m.id, m.state]));
-    return items.filter((x) => String(x.tp).toUpperCase() === "FILE" && !x.del && MODEL_EXT.test(x.nm || ""))
-      .map((x) => ({ id: x.id, name: x.nm, folder: (byId.get(x.pid) || {}).nm || "", state: state0.get(x.id) || "unloaded" }))
-      .sort((a, b) => (a.folder + a.name).localeCompare(b.folder + b.name));
+    const models = items.filter((x) => String(x.tp).toUpperCase() === "FILE" && !x.del && MODEL_EXT.test(x.nm || ""))
+      .map((x) => ({ id: x.id, name: x.nm, parent: x.pid, folder: (byId.get(x.pid) || {}).nm || "", state: state0.get(x.id) || "unloaded" }));
+    models.folders = items.filter((x) => String(x.tp).toUpperCase() === "FOLDER" && !x.del).map((x) => ({ id: x.id, name: x.nm, parent: x.pid }));
+    return models;
   }
 
   // form: name, models (tick boxes) or a saved view
@@ -194,7 +195,7 @@
       <div class="row"><label><input type="radio" name="fKind" value="models"${f.kind === "models" ? " checked" : ""}> ${esc(L2("Модел(и)", "Model(s)"))}</label>
         <label><input type="radio" name="fKind" value="view"${f.kind === "view" ? " checked" : ""}> ${esc(L2("Изглед", "View"))}</label></div>
       ${f.kind === "models"
-        ? `<label>${esc(L2("Модели", "Models"))}</label><div class="opts">${f.models.map((m) => `<label><input type="checkbox" value="${esc(m.id)}" data-name="${esc(m.name)}"${chosen.has(m.id) ? " checked" : ""}> ${esc(m.name)}${m.folder ? ` <span style="color:var(--muted);font-size:11px">(${esc(m.folder)})</span>` : ""}</label>`).join("") || esc(L2("Няма модели.", "No models."))}</div>`
+        ? `<label>${esc(L2("Модели (папките на проекта)", "Models (project folders)"))}</label><div class="opts tree">${modelTree(f, chosen) || esc(L2("Няма модели.", "No models."))}</div>`
         : `<label>${esc(L2("Изглед", "View"))}</label><select id="fView">${f.views.map((v) => `<option value="${esc(v.id)}"${s.viewId === v.id ? " selected" : ""}>${esc(v.name)}</option>`).join("")}</select>
            ${f.views.length ? "" : `<div class="sub">${esc(L2("Няма запазени изгледи в проекта.", "No saved views in the project."))}</div>`}`}
       <div class="acts"><button id="fSave">${esc(L2("Запази", "Save"))}</button><button class="sec" id="fCancel">${esc(L2("Отказ", "Cancel"))}</button>
@@ -205,6 +206,15 @@
     $("fCancel").onclick = () => { state.form = null; renderForm(); };
     $("fSave").onclick = () => saveForm().catch((e) => setStatus(((e && e.message) || e), true));
     if ($("fDel")) $("fDel").onclick = () => removeStage(f.stage).catch((e) => setStatus(((e && e.message) || e), true));
+  }
+  /** The project's folders with their model files, as in Connect's Models panel; folders open where a chosen model is. */
+  function modelTree(f, chosen) {
+    const nodes = f.models.folders ? ST.tree(f.models.folders, f.models) : f.models.map((m) => Object.assign({ type: "file" }, m));
+    const has = (n) => (n.type === "file" ? chosen.has(n.id) : n.children.some(has));
+    const draw = (list) => list.map((n) => n.type === "folder"
+      ? `<details${has(n) ? " open" : ""}><summary>📁 ${esc(n.name)}</summary><div class="kids">${draw(n.children)}</div></details>`
+      : `<label><input type="checkbox" value="${esc(n.id)}" data-name="${esc(n.name)}"${chosen.has(n.id) ? " checked" : ""}> ${esc(n.name)}${n.state === "loaded" ? ` <span style="color:var(--accent);font-size:10.5px">● ${esc(L2("зареден", "loaded"))}</span>` : ""}</label>`).join("");
+    return draw(nodes);
   }
   async function saveForm() {
     const f = state.form, nm = $("fName").value.trim();

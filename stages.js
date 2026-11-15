@@ -38,6 +38,25 @@
       missing: (stage.models || []).filter((m) => !byId.has(m.id)),
     };
   }
+  /**
+   * Folder tree of the project's model files. folders: [{id, name, parent}], files: [{id, name, parent, ...}].
+   * Only folders that contain a model file (at any depth) are kept; folders first, both sorted by name.
+   * @returns [{type: "folder", id, name, children: [...]} | {type: "file", ...file}]  (children of the top level)
+   */
+  function tree(folders, files) {
+    const node = new Map(folders.map((f) => [f.id, { type: "folder", id: f.id, name: f.name, parent: f.parent, children: [] }]));
+    const roots = [];
+    const attach = (n, parent) => { const p = node.get(parent); if (p) p.children.push(n); else roots.push(n); };
+    for (const n of node.values()) attach(n, n.parent);
+    for (const f of files) attach(Object.assign({ type: "file" }, f), f.parent);
+    const prune = (list) => list.filter((n) => n.type === "file" || (n.children = prune(n.children)).length)
+      .sort((a, b) => (a.type !== b.type ? (a.type === "folder" ? -1 : 1) : String(a.name).localeCompare(String(b.name))));
+    let top = prune(roots);
+    // the project root folder itself is not shown: start at its children
+    while (top.length === 1 && top[0].type === "folder" && !top[0].parent) top = top[0].children;
+    return top;
+  }
+
   /** One-line description of a stage for its tile. */
   function describe(stage, lang) {
     const bg = lang !== "en";
@@ -86,5 +105,5 @@
     };
   }
 
-  return { LIB_NAMES, DEF_ID, link, definition, parse, forTool, newId, plan, describe, store };
+  return { LIB_NAMES, DEF_ID, link, definition, parse, forTool, newId, plan, tree, describe, store };
 });
