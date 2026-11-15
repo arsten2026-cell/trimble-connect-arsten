@@ -23,8 +23,10 @@
       i18n: { "en-US": { name: "Stages / Етапи", props: labels }, "__prop-order__": { name: "__prop-order__", props: order } } };
   }
 
-  const parse = (s) => { try { const a = JSON.parse(s || "[]"); return Array.isArray(a) ? a.filter((x) => x && x.id && x.tool && x.name) : []; } catch { return []; } };
-  const forTool = (stages, tool) => stages.filter((s) => s.tool === tool);
+  // a stage applies to several tools: {tools: ["pour", "steel", ...]}; older records had one "tool"
+  const toolsOf = (s) => (Array.isArray(s.tools) ? s.tools : s.tool ? [s.tool] : []);
+  const parse = (s) => { try { const a = JSON.parse(s || "[]"); return Array.isArray(a) ? a.filter((x) => x && x.id && x.name && toolsOf(x).length).map((x) => Object.assign({}, x, { tools: toolsOf(x) })) : []; } catch { return []; } };
+  const forTool = (stages, tool) => stages.filter((s) => toolsOf(s).includes(tool));
   const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
   /** What to load / unload for a model stage. models = viewer.getModels() rows {id, name, state}.
@@ -105,5 +107,5 @@
     };
   }
 
-  return { LIB_NAMES, DEF_ID, link, definition, parse, forTool, newId, plan, tree, describe, store };
+  return { LIB_NAMES, DEF_ID, link, definition, parse, forTool, toolsOf, newId, plan, tree, describe, store };
 });

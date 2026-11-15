@@ -30,7 +30,10 @@
   const state = { api: null, access: null, tools: TOOLS, allowed: new Set(), view: "home",
     stages: [], store: null, stageTool: null, current: {}, form: null, busy: false };
   const ST = window.ArstenStages;
-  const canEdit = () => !!(state.store && state.store.writable && (PROBE || (state.access && (state.access.role === "admin" || state.access.role === "gc"))));
+  // only 00_ADMIN and "02.1-EXECUTION PROJECT MANAGER" manage stages, in the "Етапи" module (user, 15.11.2026)
+  const canManage = () => !!(PROBE || (state.access && (state.access.role === "admin" || ArstenAccess.can(state.access, "stages"))));
+  const canEdit = () => !!(state.store && state.store.writable && canManage());
+  const STAGE_TOOLS = () => state.tools.filter((t) => t.id !== "stages" && (PROBE || !t.local));
   const setStatus = (t, bad) => { const s = $("status"); s.hidden = !t; s.textContent = t || ""; s.className = "status" + (bad ? " bad" : ""); };
   const name = (t) => (lang === "bg" ? t.bg : t.en);
 
@@ -49,8 +52,8 @@
     $("frames").hidden = home || stg;   // the start / stage screens get the whole height
     if (stg) renderStages();
     if (home) {
-      $("tiles").innerHTML = state.tools.map((t) => {
-        const ok = state.allowed.has(t.id);
+      $("tiles").innerHTML = [STAGES_TILE].concat(state.tools).map((t) => {
+        const ok = t.id === "stages" ? canManage() : state.allowed.has(t.id);
         const icon = t.icon || BASE + t.repo + "/icon.svg";
         return `<button class="tile${ok ? "" : " off"}" data-open="${t.id}"${ok ? "" : ` disabled title="${esc(L2("Нямате достъп", "No access"))}"`}>
           <img src="${esc(icon)}" alt=""><b>${esc(name(t))}</b><span>${esc(ok ? t.sub[lang === "bg" ? 0 : 1] : L2("Нямате достъп", "No access"))}</span></button>`;
@@ -62,7 +65,7 @@
       const cur = t && state.current[t.id];
       $("barStage").textContent = cur ? "· " + cur : "";
       $("btnStage").textContent = cur ? L2("Смени", "Change") : L2("Етапи", "Stages");
-      $("btnStage").hidden = !t || (!ST.forTool(state.stages, t.id).length && !canEdit());
+      $("btnStage").hidden = !t || !ST.forTool(state.stages, t.id).length;
     }
     for (const t of state.tools) {
       let f = document.getElementById("f_" + t.id);
@@ -76,6 +79,7 @@
       if (f) f.hidden = state.view !== t.id;
     }
   }
+  const STAGES_TILE = { id: "stages", bg: "Етапи", en: "Stages", sub: ["Сгради, модели, изгледи", "Buildings, models, views"], icon: "stages.svg" };
   function open(id) {
     if (id !== "home" && !state.allowed.has(id)) return;
     state.view = id;
@@ -84,6 +88,7 @@
   /** Start-screen click: Монолитен бетон and Стомана always open on their stages (user, 15.11.2026); the other tools
    *  only when they have stages, else they open straight away. */
   function openTool(id) {
+    if (id === "stages") { if (!canManage()) return; state.stageTool = null; state.form = null; state.view = "stages"; render(); return; }
     if (!state.allowed.has(id)) return;
     const t = state.tools.find((x) => x.id === id) || {};
     if (t.stagesFirst || ST.forTool(state.stages, id).length) { state.stageTool = id; state.form = null; state.view = "stages"; render(); }
@@ -96,17 +101,20 @@
 
   // ---------- stages ----------
   function renderStages() {
-    const t = state.tools.find((x) => x.id === state.stageTool);
+    const manage = !state.stageTool;   // the "Етапи" module itself
+    const t = manage ? STAGES_TILE : state.tools.find((x) => x.id === state.stageTool);
     if (!t) return;
-    const list = ST.forTool(state.stages, t.id);
-    const icon = t.icon || BASE + t.repo + "/icon.svg";
+    const list = manage ? state.stages : ST.forTool(state.stages, t.id);
+    const iconOf = (s) => { const first = state.tools.find((x) => ST.toolsOf(s)[0] === x.id); return manage ? (first ? first.icon || BASE + first.repo + "/icon.svg" : "stages.svg") : t.icon || BASE + t.repo + "/icon.svg"; };
+    const toolNames = (s) => ST.toolsOf(s).map((id) => { const x = state.tools.find((y) => y.id === id); return x ? name(x) : id; }).join(", ");
     $("btnStHome").textContent = "⌂ " + L2("Начало", "Home");
-    $("stTitle").textContent = name(t) + " – " + L2("изберете етап", "choose a stage");
+    $("stTitle").textContent = manage ? L2("Етапи на проекта", "Project stages") : name(t) + " – " + L2("изберете етап", "choose a stage");
     $("stTiles").innerHTML = list.map((s) => `<div class="tile stage" role="button" tabindex="0" data-stage="${esc(s.id)}">
-        ${canEdit() ? `<span class="ed" data-edit="${esc(s.id)}" title="${esc(L2("Промени", "Edit"))}">✎</span>` : ""}
-        <img src="${esc(icon)}" alt=""><b>${esc(s.name)}</b><span>${esc(ST.describe(s, lang))}</span></div>`).join("")
-      + `<div class="tile cur" role="button" tabindex="0" data-stage="__current"><div class="plus">▶</div><b>${esc(L2("Текущ модел", "Current model"))}</b><span>${esc(L2("Без смяна на модела", "Keep what is loaded"))}</span></div>`
-      + (canEdit() ? `<div class="tile add" role="button" tabindex="0" data-add="1"><div class="plus">+</div><b>${esc(L2("Нов етап", "New stage"))}</b><span>${esc(L2("Модел или изглед", "Model or view"))}</span></div>` : "");
+        ${manage && canEdit() ? `<span class="ed" data-edit="${esc(s.id)}" title="${esc(L2("Промени", "Edit"))}">✎</span>` : ""}
+        <img src="${esc(iconOf(s))}" alt=""><b>${esc(s.name)}</b><span>${esc(ST.describe(s, lang))}${manage ? `<br>→ ${esc(toolNames(s))}` : ""}</span></div>`).join("")
+      + (manage ? "" : `<div class="tile cur" role="button" tabindex="0" data-stage="__current"><div class="plus">▶</div><b>${esc(L2("Текущ модел", "Current model"))}</b><span>${esc(L2("Без смяна на модела", "Keep what is loaded"))}</span></div>`)
+      + (manage && canEdit() ? `<div class="tile add" role="button" tabindex="0" data-add="1"><div class="plus">+</div><b>${esc(L2("Нов етап", "New stage"))}</b><span>${esc(L2("Модел или изглед", "Model or view"))}</span></div>` : "")
+      + (manage && !list.length && !canEdit() ? `<div class="sub">${esc(L2("Етапите не могат да се запазят (няма достъп до библиотеката).", "Stages cannot be saved (no access to the library)."))}</div>` : "");
     renderForm();
   }
   async function applyStage(stage) {
@@ -141,6 +149,7 @@
     if (!t) return;
     if (t.dataset.stage === "__current") { delete state.current[state.stageTool]; open(state.stageTool); return; }
     const s = state.stages.find((x) => x.id === t.dataset.stage);
+    if (s && !state.stageTool) { if (canEdit()) startForm(s); return; }
     if (s) applyStage(s);
   });
   $("stTiles").addEventListener("keydown", (e) => { if (e.key === "Enter") { const t = e.target.closest("[role=button]"); if (t) t.click(); } });
@@ -183,7 +192,7 @@
     try { models = await projectModels(); }
     catch (e) { console.warn(e); try { models = ((await api.viewer.getModels()) || []).filter((m) => ["loaded", "assimilated", "unloaded"].includes(m.state)); } catch {} }
     try { views = (await api.view.getViews()) || []; } catch {}
-    state.form = { stage, models, views, kind: (stage && stage.kind) || "models" };
+    state.form = { stage, models, views, kind: (stage && stage.kind) || "models", tools: stage ? ST.toolsOf(stage) : [] };
     renderForm();
   }
   function renderForm() {
@@ -193,6 +202,8 @@
     box.hidden = false;
     box.innerHTML = `<b>${esc(f.stage ? L2("Промяна на етап", "Edit stage") : L2("Нов етап", "New stage"))}</b>
       <label>${esc(L2("Име (напр. Сграда А)", "Name (e.g. Building A)"))}</label><input type="text" id="fName" value="${esc(f.name != null ? f.name : s.name || "")}">
+      <label>${esc(L2("За кои модули", "For which modules"))}</label>
+      <div class="row" style="flex-wrap:wrap">${STAGE_TOOLS().map((x) => `<label><input type="checkbox" class="fTool" value="${esc(x.id)}"${(f.tools || ST.toolsOf(s)).includes(x.id) ? " checked" : ""}> ${esc(name(x))}</label>`).join("")}</div>
       <label>${esc(L2("Какво да се отваря", "What to open"))}</label>
       <div class="row"><label><input type="radio" name="fKind" value="models"${f.kind === "models" ? " checked" : ""}> ${esc(L2("Модел(и)", "Model(s)"))}</label>
         <label><input type="radio" name="fKind" value="view"${f.kind === "view" ? " checked" : ""}> ${esc(L2("Изглед", "View"))}</label></div>
@@ -203,7 +214,8 @@
       <div class="acts"><button id="fSave">${esc(L2("Запази", "Save"))}</button><button class="sec" id="fCancel">${esc(L2("Отказ", "Cancel"))}</button>
         ${f.stage ? `<button class="del" id="fDel">${esc(L2("Изтрий", "Delete"))}</button>` : ""}</div>`;
     // keep what was typed / ticked when switching between models and view
-    const keep = () => { f.name = $("fName").value; const ticks = box.querySelectorAll(".opts input"); if (ticks.length) f.chosen = [...ticks].filter((c) => c.checked).map((c) => c.value); };
+    const keep = () => { f.name = $("fName").value; f.tools = [...box.querySelectorAll(".fTool:checked")].map((c) => c.value);
+      const ticks = box.querySelectorAll(".opts input"); if (ticks.length) f.chosen = [...ticks].filter((c) => c.checked).map((c) => c.value); };
     box.querySelectorAll("input[name=fKind]").forEach((r) => { r.onchange = () => { keep(); f.kind = r.value; renderForm(); }; });
     $("fCancel").onclick = () => { state.form = null; renderForm(); };
     $("fSave").onclick = () => saveForm().catch((e) => setStatus(((e && e.message) || e), true));
@@ -221,7 +233,9 @@
   async function saveForm() {
     const f = state.form, nm = $("fName").value.trim();
     if (!nm) return setStatus(L2("Въведете име.", "Enter a name."), true);
-    const stage = { id: (f.stage && f.stage.id) || ST.newId(), tool: state.stageTool, name: nm, kind: f.kind };
+    const tools = [...$("stForm").querySelectorAll(".fTool:checked")].map((c) => c.value);
+    if (!tools.length) return setStatus(L2("Изберете поне един модул.", "Choose at least one module."), true);
+    const stage = { id: (f.stage && f.stage.id) || ST.newId(), tools, name: nm, kind: f.kind };
     if (f.kind === "models") {
       stage.models = [...$("stForm").querySelectorAll(".opts input:checked")].map((c) => ({ id: c.value, name: c.dataset.name }));
       if (!stage.models.length) return setStatus(L2("Изберете поне един модел.", "Choose at least one model."), true);
