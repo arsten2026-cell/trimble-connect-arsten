@@ -159,6 +159,10 @@
         // the zoom was meant for the last load call; if that one failed, zoom to a model that did load (round 4, L7)
         const okIds = (stage.models || []).filter((m) => !failed.includes(m)).map((m) => m.id);
         if (failed.length && steps && okIds.length) { try { await api.viewer.toggleModel([okIds[okIds.length - 1]], true, true); } catch {} }
+        // the fit above happens before the previous stage's models are unloaded (and not at all when the models were
+        // already loaded), so it can keep the old camera: end in the viewer's default 3D (axon) view of what is loaded
+        // now (user, 15.11.2026). The Workspace API has no "axon" preset; "reset" is the default 3D camera.
+        if (okIds.length) { try { await api.viewer.setCamera("reset", { animationTime: 400 }); } catch {} }
         // other tools' stages whose models were just unloaded are no longer current (#13)
         const want = new Set((stage.models || []).map((m) => m.id));
         for (const [t, s] of Object.entries(state.currentStage || {})) {
