@@ -30,8 +30,9 @@
   const state = { api: null, access: null, tools: TOOLS, allowed: new Set(), view: "home",
     stages: [], store: null, stageTool: null, current: {}, form: null, busy: false };
   const ST = window.ArstenStages;
-  // only 00_ADMIN and "02.1-EXECUTION PROJECT MANAGER" manage stages, in the "Етапи" module (user, 15.11.2026)
-  const canManage = () => !!(PROBE || (state.access && (state.access.role === "admin" || ArstenAccess.can(state.access, "stages"))));
+  // only 00_ADMIN and "02.1-EXECUTION PROJECT MANAGER" manage stages, in the "Етапи" module (user, 15.11.2026). Both groups
+  // carry the "stages" capability; a Connect project admin outside them does not (the library lock refuses them too).
+  const canManage = () => !!(PROBE || (state.access && ArstenAccess.can(state.access, "stages")));
   const canEdit = () => !!(state.store && state.store.writable && canManage());
   const STAGE_TOOLS = () => state.tools.filter((t) => t.id !== "stages" && (PROBE || !t.local));
   const setStatus = (t, bad) => { const s = $("status"); s.hidden = !t; s.textContent = t || ""; s.className = "status" + (bad ? " bad" : ""); };
@@ -88,16 +89,22 @@
   /** Start-screen click: Монолитен бетон and Стомана always open on their stages (user, 15.11.2026); the other tools
    *  only when they have stages, else they open straight away. */
   function openTool(id) {
-    if (id === "stages") { if (!canManage()) return; state.stageTool = null; state.form = null; state.view = "stages"; render(); return; }
+    if (id === "stages") { if (!canManage()) return; showStages(null); return; }
     if (!state.allowed.has(id)) return;
     const t = state.tools.find((x) => x.id === id) || {};
-    if (t.stagesFirst || ST.forTool(state.stages, id).length) { state.stageTool = id; state.form = null; state.view = "stages"; render(); }
+    if (t.stagesFirst || ST.forTool(state.stages, id).length) showStages(id);
     else open(id);
+  }
+  /** The stage screen (tool = null: the "Етапи" module). Shown at once with what is known, then refreshed from the
+   *  server, so stages another manager added or deleted meanwhile appear (review round 2, #14). */
+  function showStages(tool) {
+    state.stageTool = tool; state.form = null; state.view = "stages"; render();
+    refreshStages().then(() => { if (state.view === "stages" && !state.form) render(); });
   }
   $("tiles").addEventListener("click", (e) => { const b = e.target.closest("button[data-open]"); if (b && !b.disabled) openTool(b.dataset.open); });
   $("btnHome").onclick = () => open("home");
   $("btnStHome").onclick = () => open("home");
-  $("btnStage").onclick = () => { state.stageTool = state.view; state.form = null; state.view = "stages"; render(); };
+  $("btnStage").onclick = () => showStages(state.view);
 
   // ---------- stages ----------
   function renderStages() {
@@ -114,7 +121,10 @@
         <img src="${esc(iconOf(s))}" alt=""><b>${esc(s.name)}</b><span>${esc(ST.describe(s, lang))}${manage ? `<br>→ ${esc(toolNames(s))}` : ""}</span></div>`).join("")
       + (manage ? "" : `<div class="tile cur" role="button" tabindex="0" data-stage="__current"><div class="plus">▶</div><b>${esc(L2("Текущ модел", "Current model"))}</b><span>${esc(L2("Без смяна на модела", "Keep what is loaded"))}</span></div>`)
       + (manage && canEdit() ? `<div class="tile add" role="button" tabindex="0" data-add="1"><div class="plus">+</div><b>${esc(L2("Нов етап", "New stage"))}</b><span>${esc(L2("Модел или изглед", "Model or view"))}</span></div>` : "")
-      + (manage && !list.length && !canEdit() ? `<div class="sub">${esc(L2("Етапите не могат да се запазят (няма достъп до библиотеката).", "Stages cannot be saved (no access to the library)."))}</div>` : "");
+      + (state.store && state.store.error
+        ? `<div class="sub bad">${esc(L2("Етапите не са достъпни: ", "Stages are not available: ") + (state.store.error === "no-library"
+            ? L2("няма достъп до библиотеката CIP/Монолитно.", "no access to the CIP/Монолитно library.") : state.store.error))}</div>`
+        : manage && !canEdit() ? `<div class="sub">${esc(L2("Етапите не могат да се променят (няма права в библиотеката).", "Stages cannot be changed (no rights in the library)."))}</div>` : "");
     renderForm();
   }
   async function applyStage(stage) {
@@ -123,19 +133,27 @@
     state.busy = true;
     setStatus(L2("Зареждане на ", "Loading ") + stage.name + "…");
     try {
+      let failed = [];
       if (stage.kind === "view") await api.view.selectView(stage.viewId);
       else {
         const p = ST.plan(stage, (await api.viewer.getModels()) || []);
-        // a model that is not in the viewer's list yet can still be loaded by its file id
-        const load = p.load.concat(p.missing.map((m) => m.id));
-        p.missing = [];
-        if (load.length) await api.viewer.toggleModel(load, true, true);
+        if (p.load.length) await api.viewer.toggleModel(p.load, true, true);
+        // a model not in the viewer's list yet can still be loaded by its file id; one at a time, so a model deleted
+        // from the project does not stop the rest of the stage (review round 2, #6)
+        for (const m of p.missing) {
+          try { await api.viewer.toggleModel([m.id], true, true); } catch (e) { failed.push(m); }
+        }
         if (p.unload.length) await api.viewer.toggleModel(p.unload, false);
-        if (p.missing.length) setStatus(L2("Липсват модели: ", "Missing models: ") + p.missing.map((m) => m.name).join(", "), true);
-        else setStatus("");
+        // other tools' stages whose models were just unloaded are no longer current (#13)
+        const want = new Set((stage.models || []).map((m) => m.id));
+        for (const [t, s] of Object.entries(state.currentStage || {})) {
+          if (t !== tool && s && s.kind !== "view" && (s.models || []).some((m) => !want.has(m.id))) { delete state.current[t]; delete state.currentStage[t]; }
+        }
       }
-      if (stage.kind === "view") setStatus("");
+      setStatus(failed.length ? L2("Не можаха да се заредят (изтрити или преместени?): ", "Could not be loaded (deleted or moved?): ")
+        + failed.map((m) => m.name).join(", ") : "", !!failed.length);
       state.current[tool] = stage.name;
+      (state.currentStage || (state.currentStage = {}))[tool] = stage;
       open(tool);
     } catch (e) { setStatus(L2("Етапът не можа да се зареди: ", "Could not load the stage: ") + ((e && e.message) || e), true); }
     finally { state.busy = false; }
@@ -147,7 +165,7 @@
     if (add) { startForm(null); return; }
     const t = e.target.closest("[data-stage]");
     if (!t) return;
-    if (t.dataset.stage === "__current") { delete state.current[state.stageTool]; open(state.stageTool); return; }
+    if (t.dataset.stage === "__current") { delete state.current[state.stageTool]; if (state.currentStage) delete state.currentStage[state.stageTool]; open(state.stageTool); return; }
     const s = state.stages.find((x) => x.id === t.dataset.stage);
     if (s && !state.stageTool) { if (canEdit()) startForm(s); return; }
     if (s) applyStage(s);
@@ -199,6 +217,8 @@
     const f = state.form, box = $("stForm");
     if (!f) { box.hidden = true; box.innerHTML = ""; return; }
     const s = f.stage || {}, chosen = new Set(f.chosen || (s.models || []).map((m) => m.id));
+    const known = new Set(f.models.map((m) => m.id));
+    const gone = (s.models || []).filter((m) => !known.has(m.id));   // deleted / moved models of this stage (#15)
     box.hidden = false;
     box.innerHTML = `<b>${esc(f.stage ? L2("Промяна на етап", "Edit stage") : L2("Нов етап", "New stage"))}</b>
       <label>${esc(L2("Име (напр. Сграда А)", "Name (e.g. Building A)"))}</label><input type="text" id="fName" value="${esc(f.name != null ? f.name : s.name || "")}">
@@ -208,7 +228,8 @@
       <div class="row"><label><input type="radio" name="fKind" value="models"${f.kind === "models" ? " checked" : ""}> ${esc(L2("Модел(и)", "Model(s)"))}</label>
         <label><input type="radio" name="fKind" value="view"${f.kind === "view" ? " checked" : ""}> ${esc(L2("Изглед", "View"))}</label></div>
       ${f.kind === "models"
-        ? `<label>${esc(L2("Модели (папките на проекта)", "Models (project folders)"))}</label><div class="opts tree">${modelTree(f, chosen) || esc(L2("Няма модели.", "No models."))}</div>`
+        ? `<label>${esc(L2("Модели (папките на проекта)", "Models (project folders)"))}</label><div class="opts tree">${modelTree(f, chosen) || esc(L2("Няма модели.", "No models."))}</div>
+           ${gone.length ? `<div class="sub bad">${esc(L2("Липсват в проекта (ще отпаднат при запис): ", "No longer in the project (dropped on save): ") + gone.map((m) => m.name).join(", "))}</div>` : ""}`
         : `<label>${esc(L2("Изглед", "View"))}</label><select id="fView">${f.views.map((v) => `<option value="${esc(v.id)}"${s.viewId === v.id ? " selected" : ""}>${esc(v.name)}</option>`).join("")}</select>
            ${f.views.length ? "" : `<div class="sub">${esc(L2("Няма запазени изгледи в проекта.", "No saved views in the project."))}</div>`}`}
       <div class="acts"><button id="fSave">${esc(L2("Запази", "Save"))}</button><button class="sec" id="fCancel">${esc(L2("Отказ", "Cancel"))}</button>
@@ -244,19 +265,44 @@
       if (!sel || !sel.value) return setStatus(L2("Изберете изглед.", "Choose a view."), true);
       stage.viewId = sel.value; stage.viewName = sel.options[sel.selectedIndex].text;
     }
-    state.stages = await state.store.save((cur) => cur.filter((x) => x.id !== stage.id).concat(stage));
-    state.form = null; setStatus(L2("Етапът е запазен.", "Stage saved.")); render();
+    if (state.busy) return;
+    state.busy = true;
+    try {
+      state.stages = await state.store.save((cur) => {
+        // editing a stage another manager deleted meanwhile must not bring it back (#14)
+        if (f.stage && !cur.some((x) => x.id === stage.id)) throw new Error(L2("Етапът е изтрит от друг потребител.", "The stage was deleted by someone else."));
+        return cur.filter((x) => x.id !== stage.id).concat(stage);
+      });
+      state.form = null; setStatus(L2("Етапът е запазен.", "Stage saved.")); render();
+    } finally { state.busy = false; }
   }
+  /** Delete with a confirm step on the button itself: window.confirm can be blocked inside Connect's iframe (P2). */
   async function removeStage(stage) {
-    if (!window.confirm(L2(`Да се изтрие ли етап „${stage.name}“?`, `Delete stage "${stage.name}"?`))) return;
-    state.stages = await state.store.save((cur) => cur.filter((x) => x.id !== stage.id));
-    state.form = null; setStatus(""); render();
+    const b = $("fDel");
+    if (b && !b.dataset.sure) {
+      b.dataset.sure = "1";
+      b.textContent = L2("Потвърди изтриване", "Confirm delete");
+      setTimeout(() => { if (b.isConnected && b.dataset.sure) { delete b.dataset.sure; b.textContent = L2("Изтрий", "Delete"); } }, 5000);
+      return;
+    }
+    if (state.busy) return;
+    state.busy = true;
+    try {
+      state.stages = await state.store.save((cur) => cur.filter((x) => x.id !== stage.id));
+      if (state.currentStage) for (const t of Object.keys(state.currentStage)) if (state.currentStage[t] && state.currentStage[t].id === stage.id) { delete state.currentStage[t]; delete state.current[t]; }
+      state.form = null; setStatus(""); render();
+    } finally { state.busy = false; }
   }
   async function loadStages() {
     const local = PROBE;
     const client = !local && window.PsetApi ? new PsetApi.PsetClient({ region: (state.project && state.project.location) || "europe", getToken: tokens.getToken }) : null;
     state.store = ST.store({ client, projectId: (state.project && state.project.id) || "probe", user: state.user, local });
-    try { state.stages = await state.store.load(); } catch (e) { console.warn(e); state.stages = []; }
+    await refreshStages();
+  }
+  async function refreshStages() {
+    if (!state.store) return;
+    try { state.stages = await state.store.load(); }
+    catch (e) { console.warn(e); if (!state.stages) state.stages = []; }   // keep what was shown; the screen shows the error
   }
 
   // Local test only (test/host.html on localhost): one probe tool, no access check.

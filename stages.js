@@ -2,8 +2,9 @@
 // (user, 15.11.2026: "I can select a view or a model that will stay there until I change … I should be able to add a second one").
 // A stage: {id, tool, name, kind: "models"|"view", models: [{id, name}], viewId, viewName}.
 // Stored ONCE per project, shared by everyone: pset library CIP/Монолитно, definition "stages",
-// link frn:entity:ARSTENSTAGES-{projectId}, prop "json". Admins / the general contractor can edit (library Edit);
-// everyone else reads. Without access to that library the stages are kept in this browser only.
+// link frn:entity:ARSTENSTAGES-{projectId}, prop "json". Only 00_ADMIN and 02.1-EXECUTION PROJECT MANAGER can edit
+// (library access: the Stages definition is Edit for those two groups, Read for everyone else);
+// everyone else reads. localStorage is used only by the local test page.
 (function (root, factory) {
   const lib = factory();
   if (typeof module === "object" && module.exports) module.exports = lib;
@@ -67,37 +68,54 @@
     return (bg ? (n === 1 ? "Модел: " : "Модели: ") : (n === 1 ? "Model: " : "Models: ")) + (stage.models || []).map((m) => m.name).join(", ");
   }
 
-  /** Storage: pset (shared) or localStorage (this browser). client = PsetClient or null. */
+  /** Storage: pset (shared by everyone in the project). localStorage (this browser only) is used ONLY for the local
+   *  test page (local = true): in a real project a failing shared store makes the stages read-only with an error
+   *  (review round 2: managers saved into their own browser without noticing). client = PsetClient or null. */
   function store({ client, projectId, user, local }) {
     const key = `arsten.stages.${projectId}`;
-    let lib = null, shared = false, writable = false;
+    let lib = null, shared = false, writable = false, error = "";
     return {
       get shared() { return shared; },
       get writable() { return writable; },
+      /** why the stages are not available / not saveable ("" when fine) */
+      get error() { return error; },
       async load() {
+        error = "";
         if (client && !local) {
           try {
             const found = await client.findLibrary(projectId, LIB_NAMES);
-            if (found.lib) {
-              lib = found.lib;
-              try { await client.ensureDefinition(lib.id, definition()); writable = true; } catch (e) { if (e.status !== 403) throw e; }
-              const got = await client.readMany(lib.id, DEF_ID, [link(projectId)]);
-              shared = true;
-              return parse((got.get(link(projectId)) || {}).json);
-            }
-          } catch (e) { console.warn("stages: shared store not available", e); }
+            if (!found.lib) { writable = false; error = "no-library"; return []; }
+            lib = found.lib;
+            writable = false;
+            try { await client.ensureDefinition(lib.id, definition()); writable = true; } catch (e) { if (e.status !== 403) throw e; }
+            const got = await client.readMany(lib.id, DEF_ID, [link(projectId)]);
+            shared = true;
+            return parse((got.get(link(projectId)) || {}).json);
+          } catch (e) {
+            console.warn("stages: shared store not available", e);
+            writable = false; shared = false; error = (e && e.message) || String(e);
+            throw e;
+          }
         }
         writable = true;
         try { return parse(localStorage.getItem(key)); } catch { return []; }
       },
-      /** change(currentList) -> new list; re-reads first so two people adding stages do not overwrite each other. */
+      /**
+       * change(currentList) -> new list. Reads the record with its version and writes with that version (PATCH, never
+       * delete + re-create): if someone else saved in between, the server refuses (412/409) and the change is
+       * applied again on top of their list. change may throw to refuse (e.g. the stage was deleted meanwhile).
+       */
       async save(change) {
         if (shared && lib) {
-          const got = await client.readMany(lib.id, DEF_ID, [link(projectId)]);
-          const next = change(parse((got.get(link(projectId)) || {}).json));
-          await client.replace(lib.id, DEF_ID, link(projectId), { json: JSON.stringify(next), updated: new Date().toISOString().slice(0, 16).replace("T", " "), by: user || "" });
-          return next;
+          for (let attempt = 0; ; attempt++) {
+            const cur = await client.readOne(lib.id, DEF_ID, link(projectId));
+            const next = change(parse(cur && cur.props ? cur.props.json : ""));
+            const props = { json: JSON.stringify(next), updated: new Date().toISOString().slice(0, 16).replace("T", " "), by: user || "?" };
+            try { await client.writeIfUnchanged(lib.id, DEF_ID, link(projectId), props, cur ? cur.v : undefined); return next; }
+            catch (e) { if ((e.status === 412 || e.status === 409) && attempt < 3) continue; throw e; }
+          }
         }
+        if (!local) throw new Error(error || "stages store not loaded");
         let cur = [];
         try { cur = parse(localStorage.getItem(key)); } catch {}
         const next = change(cur);
