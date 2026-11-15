@@ -30,6 +30,28 @@
   .bar button { font:inherit; font-size:12px; padding:3px 9px; border:1px solid var(--ink); background:var(--ink); color:#fff; cursor:pointer; border-radius:0; }
   .bar .nm { font-weight:600; font-size:12.5px; }
   .bar .brand { margin-left:auto; font-size:11px; color:var(--muted); }
+  .bar .sec { background:transparent; color:var(--ink); border-color:var(--line); }
+  .bar .stg { font-size:12px; color:var(--accent); font-weight:600; }
+  /* stages */
+  .sthead { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  .sthead button, .form button { font:inherit; font-size:12px; padding:3px 9px; border:1px solid var(--ink); background:var(--ink); color:#fff; cursor:pointer; border-radius:0; }
+  .sthead button.sec, .form button.sec { background:transparent; color:var(--ink); border-color:var(--line); }
+  .sthead b { font-size:14px; }
+  .tile.stage { position:relative; }
+  .tile.stage .ed { position:absolute; top:3px; right:5px; font-size:13px; color:var(--muted); padding:2px 4px; }
+  .tile.stage .ed:hover { color:var(--accent); }
+  .tile.add { border-style:dashed; color:var(--muted); }
+  .tile.add .plus { font-size:30px; line-height:52px; height:52px; color:var(--accent); }
+  .tile.cur .plus { font-size:24px; line-height:52px; height:52px; color:var(--muted); }
+  .form { background:#fff; border:1px solid var(--line); padding:10px; margin-top:10px; }
+  .form label { display:block; font-size:12px; margin:6px 0 2px; color:var(--muted); }
+  .form input[type=text], .form select { font:inherit; font-size:12.5px; padding:4px 6px; border:1px solid var(--line); width:100%; border-radius:0; background:#fff; }
+  .form .opts { max-height:180px; overflow:auto; border:1px solid var(--line); padding:4px 6px; }
+  .form .opts label { display:flex; gap:6px; align-items:center; margin:2px 0; color:var(--ink); }
+  .form .row { display:flex; gap:12px; }
+  .form .row label { display:inline-flex; gap:4px; align-items:center; color:var(--ink); }
+  .form .acts { display:flex; gap:6px; margin-top:10px; }
+  .form .acts .del { margin-left:auto; background:#b3261e; border-color:#b3261e; }
   .status { font-size:12px; color:var(--muted); padding:8px 12px; }
   .status.bad { color:var(--bad); }
   .retry { margin:8px 12px; font:inherit; padding:5px 10px; border:1px solid var(--ink); background:var(--ink); color:#fff; cursor:pointer; border-radius:0; }
@@ -43,10 +65,18 @@
   <h1><b>Arsten</b> / MULTIPLAN</h1>
   <div class="tiles" id="tiles"></div>
 </div>
-<div class="bar" id="bar" hidden><button id="btnHome">⌂ Начало</button><span class="nm" id="barName"></span><span class="brand">Arsten / MULTIPLAN</span></div>
+<div class="home" id="stages" hidden>
+  <div class="sthead"><button id="btnStHome">⌂ Начало</button><b id="stTitle"></b></div>
+  <div class="tiles" id="stTiles"></div>
+  <div class="form" id="stForm" hidden></div>
+</div>
+<div class="bar" id="bar" hidden><button id="btnHome">⌂ Начало</button><span class="nm" id="barName"></span><span class="stg" id="barStage"></span>
+  <button class="sec" id="btnStage">Етапи</button><span class="brand">Arsten / MULTIPLAN</span></div>
 <div class="frames" id="frames"></div>
 <script src="https://cdn.jsdelivr.net/npm/trimble-connect-workspace-api@0.3.38/dist/iife/trimbleconnect.workspace.api.js" integrity="sha384-lFiNt/56q6HnUNbuy0WHO3NP6BkQjY4EH8+5eELYVfnhkB42snRTmSa3UOAlX9gg" crossorigin="anonymous"></script>
 <script src="arsten-access.js?v=10"></script>
-<script src="app.js?v=10"></script>
+<script src="psetapi.js?v=5"></script>
+<script src="stages.js?v=1"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>
