@@ -1,0 +1,16 @@
+{
+  "panel": "arsten",
+  "repo": "arsten2026-cell/trimble-connect-arsten",
+  "id": "6f0f27f48a",
+  "built": "2026-11-16T21:53:08.069Z",
+  "files": {
+    "app.js": "8bdf1e4fb9",
+    "stages.js": "e1a886962e",
+    "stages.svg": "34f7153922",
+    "psetapi.js": "cb56112323",
+    "arsten-access.js": "c29c3b3f4f",
+    "manifest.json": "48d1c3cfef",
+    "icon.svg": "71a00ff0aa",
+    "index.html": "3dbc5f42d7"
+  }
+}

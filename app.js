@@ -25,6 +25,7 @@
     // Document control for the general contractor (plugins/arsten-docs, 16.11.2026). Its own access check uses the same
     // group mapping; "documents" is not an app kind in arsten-access.js, so the roles are listed here.
     { id: "docs", app: "documents", roles: ["admin", "gc", "designer"], repo: "arsten-connect-docs", bg: "Документи", en: "Documents", sub: ["За изпълнение, ревизии, RFI", "For construction, revisions, RFIs"] },
+    { id: "admin", app: "projectAdmin", roles: ["admin"], repo: "trimble-connect-admin", bg: "Администрация", en: "Administration", sub: ["Настройка, данни, промени", "Setup, data, changes"] },
   ];
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -63,6 +64,7 @@
         return `<button class="tile${ok ? "" : " off"}" data-open="${t.id}"${ok ? "" : ` disabled title="${esc(L2("Нямате достъп", "No access"))}"`}>
           <img src="${esc(icon)}" alt=""><b>${esc(name(t))}</b><span>${esc(ok ? t.sub[lang === "bg" ? 0 : 1] : L2("Нямате достъп", "No access"))}</span></button>`;
       }).join("");
+      for (const t of state.tools) if (state.allowed.has(t.id)) versionOf(t);   // ask early, so opening a tool is not delayed
     } else {
       const t = state.tools.find((x) => x.id === state.view);
       $("barName").textContent = t ? name(t) : "";
@@ -77,12 +79,38 @@
       if (state.view === t.id && !f) {
         f = document.createElement("iframe");
         f.id = "f_" + t.id;
-        f.src = t.local || BASE + t.repo + "/index.html?shell=1";
         f.allow = "camera; clipboard-write";
         $("frames").appendChild(f);
+        const frame = f;
+        toolUrl(t).then((u) => { if (!frame.getAttribute("src")) frame.src = u; });
       }
       if (f) f.hidden = state.view !== t.id;
     }
+  }
+  // Versioned tool URLs (A4, 16.11.2026): scripts/release.mjs publishes version.json per tool; loading
+  // index.html?shell=1&v=<id> means a release is picked up at once instead of after GitHub Pages' ~10 min cache.
+  // No version.json (older release) or no answer within 2.5 s: the plain URL, as before.
+  // A failed fetch is not kept, and an answer older than a minute is asked again, so a shell left open picks up a release.
+  const versions = new Map();   // tool id -> {at, p}
+  function versionOf(t) {
+    if (t.local) return Promise.resolve("");
+    const hit = versions.get(t.id);
+    if (hit && Date.now() - hit.at < 60000) return hit.p;
+    const ctl = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = setTimeout(() => ctl && ctl.abort(), 2500);
+    const entry = { at: Date.now(), p: null };
+    entry.p = fetch(BASE + t.repo + "/version.json?nc=" + Date.now(), { cache: "no-store", signal: ctl ? ctl.signal : undefined })
+      .then((r) => (r.ok ? r.json() : null)).then((v) => (v && v.id ? String(v.id) : ""))
+      .catch(() => "")
+      .then((id) => { if (!id && versions.get(t.id) === entry) versions.delete(t.id); return id; })   // don't keep failures
+      .finally(() => clearTimeout(timer));
+    versions.set(t.id, entry);
+    return entry.p;
+  }
+  async function toolUrl(t) {
+    if (t.local) return t.local;
+    const v = await versionOf(t);
+    return BASE + t.repo + "/index.html?shell=1" + (v ? "&v=" + encodeURIComponent(v) : "");
   }
   const STAGES_TILE = { id: "stages", bg: "Етапи", en: "Stages", sub: ["Сгради, модели, изгледи", "Buildings, models, views"], icon: "stages.svg" };
   function open(id) {
