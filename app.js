@@ -11,6 +11,7 @@
 //   Стомана (Assembly status)                                                       -> "assembly"    (admin, GC, designers)
 //   Авторски надзор (acceptance)                                                           -> "acceptance"  (admin, GC, designers)
 //   Статус (Project status)                                                       -> "projectStatus" (admin, GC, client)
+//   Документи (document control, plugins/arsten-docs)                              -> roles admin, GC, designers
 (function () {
   "use strict";
   const BASE = "https://arsten2026-cell.github.io/";
@@ -21,6 +22,9 @@
     { id: "progress", app: "projectStatus", repo: "trimble-connect-project-status", bg: "Статус", en: "Status", sub: ["Напредък на проекта", "Project progress"] },
     { id: "pourtags", app: "execution", repo: "trimble-connect-pour-tags", bg: "Етикети тактове", en: "Pour tags", sub: ["Номера на тактовете", "Pour numbers"] },
     { id: "cutags", app: "execution", repo: "trimble-connect-castunit-tags", bg: "Бетонови елементи", en: "Cast units", sub: ["Марки и армировка", "Marks and rebar"] },
+    // Document control for the general contractor (plugins/arsten-docs, 16.11.2026). Its own access check uses the same
+    // group mapping; "documents" is not an app kind in arsten-access.js, so the roles are listed here.
+    { id: "docs", app: "documents", roles: ["admin", "gc", "designer"], repo: "arsten-connect-docs", bg: "Документи", en: "Documents", sub: ["За изпълнение, ревизии, RFI", "For construction, revisions, RFIs"] },
   ];
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -140,14 +144,12 @@
         for (const t of Object.keys(state.currentStage || {})) if (t !== tool) { delete state.current[t]; delete state.currentStage[t]; }
       } else {
         const p = ST.plan(stage, (await api.viewer.getModels()) || []);
-        // zoom to the models once, with the last load call, instead of a camera jump per model (round 3, L4)
-        const steps = (p.load.length ? 1 : 0) + p.missing.length;
-        let step = 0;
-        if (p.load.length) await api.viewer.toggleModel(p.load, true, ++step === steps);
+        // no zoom while loading: one camera move at the end, after the old stage's models are gone (round 5, L8)
+        if (p.load.length) await api.viewer.toggleModel(p.load, true, false);
         // a model not in the viewer's list yet can still be loaded by its file id; one at a time, so a model deleted
         // from the project does not stop the rest of the stage (review round 2, #6)
         for (const m of p.missing) {
-          try { await api.viewer.toggleModel([m.id], true, ++step === steps); } catch (e) { failed.push(m); }
+          try { await api.viewer.toggleModel([m.id], true, false); } catch (e) { failed.push(m); }
         }
         if (p.unload.length) await api.viewer.toggleModel(p.unload, false);
         // a deleted file id may be ignored silently instead of refused: report stage models the viewer lists as not
@@ -156,12 +158,10 @@
           const now = new Map(((await api.viewer.getModels()) || []).map((m) => [m.id, m.state]));
           for (const m of stage.models || []) if (!failed.includes(m) && now.get(m.id) === "unloaded") failed.push(m);
         } catch {}
-        // the zoom was meant for the last load call; if that one failed, zoom to a model that did load (round 4, L7)
+        // end in the viewer's default 3D (axon) view of what is loaded now (user, 15.11.2026): the camera used to stay
+        // on the previous stage. The Workspace API has no "axon" preset; "reset" is the default 3D camera fitted to the
+        // loaded models. This replaces the fit on the last load call (round 3 L4 / round 4 L7, round 5 L8).
         const okIds = (stage.models || []).filter((m) => !failed.includes(m)).map((m) => m.id);
-        if (failed.length && steps && okIds.length) { try { await api.viewer.toggleModel([okIds[okIds.length - 1]], true, true); } catch {} }
-        // the fit above happens before the previous stage's models are unloaded (and not at all when the models were
-        // already loaded), so it can keep the old camera: end in the viewer's default 3D (axon) view of what is loaded
-        // now (user, 15.11.2026). The Workspace API has no "axon" preset; "reset" is the default 3D camera.
         if (okIds.length) { try { await api.viewer.setCamera("reset", { animationTime: 400 }); } catch {} }
         // other tools' stages whose models were just unloaded are no longer current (#13)
         const want = new Set((stage.models || []).map((m) => m.id));
@@ -371,7 +371,7 @@
       return;
     }
     if (access.role === "none") { ArstenAccess.renderDenied(document.body, lang, access); return; }
-    state.allowed = new Set(TOOLS.filter((t) => ArstenAccess.allows(t.app, access.role) || (t.app === "acceptance" && ArstenAccess.can(access, "approve"))).map((t) => t.id));
+    state.allowed = new Set(TOOLS.filter((t) => (t.roles ? t.roles.includes(access.role) : ArstenAccess.allows(t.app, access.role)) || (t.app === "acceptance" && ArstenAccess.can(access, "approve"))).map((t) => t.id));
     if (!state.allowed.size) { ArstenAccess.renderDenied(document.body, lang, access); return; }
     state.project = access.project || (await api.project.getProject());
     try { const u = access.user || (await api.user.getUser()); state.user = [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email || ""; } catch {}
