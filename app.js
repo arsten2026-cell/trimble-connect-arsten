@@ -32,8 +32,11 @@
   ];
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  // language: the one chosen inside the tools (same site, same storage), Bulgarian by default
-  let lang = (() => { try { return localStorage.getItem("arsten.pourStatus.lang") || localStorage.getItem("arsten.acceptance.lang") || "bg"; } catch { return "bg"; } })();
+  // language: one setting for all tools (A10, shared/arsten-i18n.js: localStorage "arsten.lang", same site, same storage).
+  // The shell has no switch of its own: it follows the tools (storage event below); with nothing chosen yet, the Connect
+  // user's language, else Bulgarian.
+  const I18N = window.ArstenI18n;
+  let lang = I18N ? I18N.getLang() : (() => { try { return localStorage.getItem("arsten.pourStatus.lang") || localStorage.getItem("arsten.acceptance.lang") || "bg"; } catch { return "bg"; } })();
   const L2 = (b, e) => (lang === "bg" ? b : e);
   // accessKnown: false until the access check answers (tiles grey meanwhile); stagesLoaded: the first stages read is done
   const state = { api: null, access: null, tools: TOOLS, allowed: new Set(), view: "home", accessKnown: false, denied: false,
@@ -262,8 +265,47 @@
       + (state.store && state.store.error
         ? `<div class="sub bad">${esc(L2("Етапите не са достъпни: ", "Stages are not available: ") + (state.store.error === "no-library"
             ? L2("няма достъп до библиотеката CIP/Монолитно.", "no access to the CIP/Монолитно library.") : state.store.error))}</div>`
-        : manage && !canEdit() ? `<div class="sub">${esc(L2("Етапите не могат да се променят (няма права в библиотеката).", "Stages cannot be changed (no rights in the library)."))}</div>` : "");
+        : manage && !canEdit() ? `<div class="sub">${esc(L2("Етапите не могат да се променят (няма права в библиотеката).", "Stages cannot be changed (no rights in the library)."))}</div>`
+        : manage && state.store && state.store.historyOff ? `<div class="sub">${esc(histOffText())}</div>`
+        : manage && canEdit() && state.store && state.store.historyTooBig ? `<div class="sub">${esc(histBigText())}</div>` : "");
     renderForm();
+    renderHistory(manage);
+  }
+  // ---------- stages history (B-Admin 9, week 4): the last 10 versions, "Върни тази версия" for the stages right ----------
+  function renderHistory(manage) {
+    let box = $("stHist");
+    if (!box) { box = document.createElement("div"); box.id = "stHist"; box.className = "form"; $("stTiles").insertAdjacentElement("afterend", box); }
+    const hist = (state.store && state.store.history) || [];
+    box.hidden = !(manage && canEdit() && !state.form && hist.length);
+    if (box.hidden) { box.innerHTML = ""; return; }
+    box.innerHTML = `<details${state.histOpen ? " open" : ""}><summary>${esc(L2(`История на етапите (последни ${hist.length})`, `Stages history (last ${hist.length})`))}</summary>
+      <div class="sub">${esc(L2("Всяко записване пази предишната версия. „Върни тази версия“ я записва отново; текущата отива в историята.", "Every save keeps the previous version. \"Restore this version\" saves it again; the current one goes into the history."))}</div>
+      ${hist.map((e, i) => `<div class="bar" style="align-items:center;gap:6px;margin:4px 0"><span class="sub" style="flex:1">${esc(ST.describeVersion(e, lang))}</span>
+        <button class="small secondary" data-restore="${i}">${esc(L2("Върни тази версия", "Restore this version"))}</button></div>`).join("")}</details>`;
+    const d = box.querySelector("details");
+    d.ontoggle = () => { state.histOpen = d.open; };
+    box.querySelectorAll("[data-restore]").forEach((b) => { b.onclick = () => restoreVersion(hist[+b.dataset.restore], b); });
+  }
+  /** Confirm on the button itself (window.confirm can be blocked in Connect's iframe), then a versioned save. */
+  async function restoreVersion(entry, b) {
+    if (!entry || !canEdit()) return;
+    if (!b.dataset.sure) {
+      b.dataset.sure = "1";
+      const when = ST.fmtUpdated(entry.updated, lang);   // local time, shared date format (round 15, L5)
+      b.textContent = L2(`Потвърди: ${entry.stages.length} ${entry.stages.length === 1 ? "етап" : "етапа"} от ${when}`, `Confirm: ${entry.stages.length} ${entry.stages.length === 1 ? "stage" : "stages"} from ${when}`);
+      setTimeout(() => { if (b.isConnected && b.dataset.sure) { delete b.dataset.sure; b.textContent = L2("Върни тази версия", "Restore this version"); } }, 5000);
+      return;
+    }
+    if (state.busy) return;
+    state.busy = true;
+    try {
+      state.saveSeq = (state.saveSeq || 0) + 1;
+      state.stages = await state.store.restore(entry);
+      state.saveSeq++;
+      const when = ST.fmtUpdated(entry.updated, lang);
+      setStatus(L2(`Върната е версията от ${when}.`, `Restored the version of ${when}.`) + histNote()); render();
+    } catch (e) { setStatus(saveError(e), true); }
+    finally { state.busy = false; }
   }
   async function applyStage(stage) {
     const api = state.api, tool = state.stageTool;
@@ -434,7 +476,7 @@
         return cur.map((x) => (x.id === stage.id ? Object.assign({}, x, stage) : x));
       });
       state.saveSeq++;
-      state.form = null; setStatus(L2("Етапът е запазен.", "Stage saved.")); render();
+      state.form = null; setStatus(L2("Етапът е запазен.", "Stage saved.") + histNote()); render();
     } catch (e) {
       if (e && e.current) { state.stages = e.current; state.form = null; render(); }   // reopen gives the stored version (round 4, L1)
       setStatus(saveError(e), true);
@@ -462,7 +504,7 @@
       state.stages = await state.store.save((cur) => cur.filter((x) => x.id !== stage.id));
       state.saveSeq++;
       if (state.currentStage) for (const t of Object.keys(state.currentStage)) if (state.currentStage[t] && state.currentStage[t].id === stage.id) { delete state.currentStage[t]; delete state.current[t]; }
-      state.form = null; setStatus(""); render();
+      state.form = null; setStatus(histNote().trim()); render();
     } catch (e) { setStatus(saveError(e), true); }
     finally { state.busy = false; }
   }
@@ -490,6 +532,31 @@
     const seq = state.saveSeq || 0;
     try { const list = await state.store.load(); if ((state.saveSeq || 0) === seq && !state.busy) state.stages = list; }
     catch (e) { console.warn(e); if (!state.stages) state.stages = []; }   // keep what was shown; the screen shows the error
+    // round 15, M2: an old project whose Stages definition has no "history" and this user may not extend it: the stages
+    // stay editable (saved without history); a user with the stages right is told once per session. Round 18 M1: load
+    // never adds the field, so historyOff is only set by a save in this session (histNote); kept here for refreshes.
+    if (state.store.historyOff && canManage() && !state.histOffTold) { state.histOffTold = true; setStatus(histOffText()); }
+    else if (histBigOnce()) setStatus(histBigText());
+  }
+  function histOffText() {
+    return L2("Историята на етапите не е включена – администратор: Администрация → Създай липсващите",
+      "The stages history is not enabled – administrator: Administration → Create missing");
+  }
+  // round 17 L5: a stage list over the 20 KB history cap keeps no earlier versions; a user with the stages right is told
+  // once per session (after a load or a save that made it so), and the Етапи screen shows it under the tiles
+  function histBigText() {
+    return L2("Списъкът с етапи е голям – историята не се пази", "The stage list is large – no history is kept");
+  }
+  /** After a save / restore / delete: " <note>." once per session when the first save just found the history refused
+   *  (round 18 M1: "history" is added at the first save, not on load), else the round 17 L5 note, else "". */
+  function histNote() {
+    if (state.store && state.store.historyOff && canManage() && !state.histOffTold) { state.histOffTold = true; return " " + histOffText() + "."; }
+    return histBigOnce() ? " " + histBigText() + "." : "";
+  }
+  function histBigOnce() {
+    if (!state.store || !state.store.historyTooBig || !canManage() || state.histBigTold) return false;
+    state.histBigTold = true;
+    return true;
   }
 
   // Local test only (test/host.html on localhost): one probe tool, no access check.
@@ -523,6 +590,7 @@
       if (p && p.id) state.project = p;
       whoAmI(u);
     } catch {}
+    if (I18N) { const l = await I18N.pickLang(api, null); if (l !== lang) { lang = l; render(); } }
     const remembered = () => {
       if (state.lastKey || !state.project || !state.userId) return;
       state.lastKey = HOME.lastKey(state.project.id, state.userId);
@@ -530,6 +598,7 @@
     };
     remembered();
     render();
+    if (window.ArstenDiag) ArstenDiag.set({ panel: "Arsten / Multiplan (arsten)", projectId: state.project && state.project.id, lang: () => lang });   // round 19 M1: before the access check, so a denied screen's diagnostics name the panel (and its project)
     const access = await accessP;
     state.access = access;
     // The shell is for everyone any of its tools is for (round 11, L1): the denied text names that audience, not the
@@ -543,18 +612,30 @@
     if (!state.project) state.project = access.project || (await api.project.getProject());
     if (!state.userId) { try { whoAmI(access.user || (await api.user.getUser())); } catch {} }
     remembered();
-    startStages();
+    if (window.ArstenDiag) ArstenDiag.set({ panel: "Arsten / Multiplan (arsten)", projectId: state.project && state.project.id, redact: [state.user], lang: () => lang });   // A23
+    // Round 16 L1: the stages record (with its history: stage, model and view names, editors' names) is read only when
+    // this user can open a tool that uses a stage. A summary-only client (Статус without admin / GC) uses none: no read,
+    // and every tile opens straight away, as with no stages.
+    const summaryOnly = !["admin", "gc"].some((r) => ArstenAccess.hasRole(access, r));
+    if (HOME.needsStages([...state.allowed], { manage: canManage(), noStage: summaryOnly ? ["progress"] : [] })) startStages();
+    else { state.stages = []; state.stagesLoaded = true; state.stagesReady = Promise.resolve(); }
     state.accessKnown = true;
     setStatus("");
     render();
   }
   window.ArstenShell = { state, TOOLS, open, openTool, resume };
 
-  if (window.parent === window) { setStatus("Not inside Trimble Connect. Add this extension to a project and open it from the 3D viewer side panel.", true); return; }
+  // a tool switched the language (another document of the same origin wrote "arsten.lang"): the start screen follows
+  window.addEventListener("storage", (e) => {
+    if (!I18N || e.key !== I18N.KEY || (e.newValue !== "bg" && e.newValue !== "en") || e.newValue === lang) return;
+    lang = e.newValue; render();
+    if (window.ArstenDiag && ArstenDiag.relabel) ArstenDiag.relabel();   // round 19 L4: "Копирай диагностика" follows too
+  });
+  if (window.parent === window) { setStatus(I18N ? I18N.word("notInside", lang) : "Not inside Trimble Connect.", true); return; }
   // first paint: the tiles at once, grey, while Connect answers (week 3 A4)
-  setStatus(L2("Свързване с Trimble Connect…", "Connecting to Trimble Connect…"));
+  setStatus(I18N ? I18N.word("connecting", lang) : L2("Свързване с Trimble Connect…", "Connecting to Trimble Connect…"));
   render();
   TrimbleConnectWorkspace.connect(window.parent, onEvent, 30000)
     .then((api) => start(api))
-    .catch((e) => { if (!state.denied) $("home").hidden = !state.accessKnown; setStatus("Could not connect to Trimble Connect: " + ((e && e.message) || e), true); });
+    .catch((e) => { if (!state.denied) $("home").hidden = !state.accessKnown; setStatus((I18N ? I18N.word("connectFail", lang) : "Could not connect to Trimble Connect") + ": " + ((e && e.message) || e), true); });
 })();

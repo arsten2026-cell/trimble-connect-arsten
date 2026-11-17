@@ -1,6 +1,11 @@
-# Arsten / MULTIPLAN – all tools in one Trimble Connect 3D-viewer panel
+# Arsten / Multiplan – all tools in one Trimble Connect 3D-viewer panel
 
-Tabs: Бетон (Pour status), Приемане, Стомана (Assembly status), Напредък (Project status), Етикети тактове, Бет. елементи.
-Each tab is the existing Arsten panel, loaded inside this one; the tabs shown follow the user's role.
+A start screen with one tile per tool: Монолитен бетон (Pour status), Авторски надзор (Acceptance), Стомана
+(Assembly status), Статус (Project status), Етикети тактове, Бетонови елементи, Документи and Администрация.
+The tiles the user's role may open come first; the others are shown greyed with who they are for. A tile opens the
+existing Arsten / Multiplan panel inside this one ("⌂ Начало" goes back), and the last tool is remembered.
+
+Етапи (stages): named model sets or saved views per tool, chosen before a tool opens. They are stored once per
+project and shared; only the stages managers (00_ADMIN, 02.1) can edit them, with the last 10 versions kept.
 
 Manifest: https://arsten2026-cell.github.io/trimble-connect-arsten/manifest.json

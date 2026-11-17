@@ -102,5 +102,18 @@
     return "hold";
   }
 
-  return { orderTiles, forWhom, audience, lastKey, readLast, writeLast, resumeLabel, alwaysLive, holdEvent, takeEvents, routeEvent, _memory: memory };
+  /** Round 16 L1: does this user need the project's stages record at all? Only when they can open a tool in which a
+   *  stage is used, or manage stages. allowed: the tool ids the user may open; o.manage: the "stages" capability;
+   *  o.noStage: tool ids that use no stage for THIS user (Статус "progress" for a summary-only client: it shows the
+   *  published summary, never the loaded models). A client-only member therefore never downloads the stages and their
+   *  history (stage names, model and view names, editors' names). */
+  function needsStages(allowed, o) {
+    o = o || {};
+    if (o.manage) return true;
+    const skip = new Set(o.noStage || []);
+    for (const id of allowed || []) if (!skip.has(id)) return true;
+    return false;
+  }
+
+  return { orderTiles, forWhom, audience, lastKey, readLast, writeLast, resumeLabel, alwaysLive, holdEvent, takeEvents, routeEvent, needsStages, _memory: memory };
 });
