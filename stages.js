@@ -70,8 +70,10 @@
 
   /** Storage: pset (shared by everyone in the project). localStorage (this browser only) is used ONLY for the local
    *  test page (local = true): in a real project a failing shared store makes the stages read-only with an error
-   *  (review round 2: managers saved into their own browser without noticing). client = PsetClient or null. */
-  function store({ client, projectId, user, local }) {
+   *  (review round 2: managers saved into their own browser without noticing). client = PsetClient or null.
+   *  canWrite (round 11, L3): the user's "stages" capability. false = read only: the definition is not touched and
+   *  nothing is ever written. Left out = decided by the server, as before (other panels' copies). */
+  function store({ client, projectId, user, local, canWrite }) {
     const key = `arsten.stages.${projectId}`;
     let lib = null, shared = false, writable = false, error = "";
     return {
@@ -89,18 +91,13 @@
             if (!found.lib) { const e = new Error("no-library"); e.code = "no-library"; throw e; }
             lib = found.lib;
             writable = false;
-            try { await client.ensureDefinition(lib.id, definition()); writable = true; } catch (e) { if (e.status !== 403) throw e; }
+            if (canWrite !== false) {
+              try { await client.ensureDefinition(lib.id, definition()); writable = true; } catch (e) { if (e.status !== 403) throw e; }
+            }
             const got = await client.readMany(lib.id, DEF_ID, [link(projectId)]);
             shared = true;
-            // No record yet: create an empty one now (long before anyone saves), so every save carries a version and a
-            // second manager's save is refused and re-applied instead of overwriting the first stages (round 3, M4).
-            if (writable && !got.has(link(projectId))) {
-              try {
-                const cur = await client.readOne(lib.id, DEF_ID, link(projectId));
-                if (cur && cur.props) return parse(cur.props.json);   // batch-get missed it, the record exists (round 4, L3)
-                await client.writeIfUnchanged(lib.id, DEF_ID, link(projectId), { json: "[]", updated: new Date().toISOString().slice(0, 16).replace("T", " "), by: user || "?" }, cur ? cur.v : undefined);
-              } catch (e) { console.warn("stages: could not create the empty record", e); }
-            }
+            // A read never writes (round 11, L3): no empty record on a new project. The first save creates the record
+            // (see save) so that it still carries a version against a second manager (round 3, M4).
             return parse((got.get(link(projectId)) || {}).json);
           } catch (e) {
             console.warn("stages: shared store not available", e);
@@ -119,8 +116,16 @@
       async save(change) {
         const L = lib;   // a refresh failing meanwhile resets `lib`; this save keeps the library it started with (round 4, L4)
         if (shared && L) {
+          if (!writable) { const e = new Error("stages are read only"); e.status = 403; throw e; }
           for (let attempt = 0; ; attempt++) {
-            const cur = await client.readOne(L.id, DEF_ID, link(projectId));
+            let cur = await client.readOne(L.id, DEF_ID, link(projectId));
+            // First save on a new project (round 11, L3; replaces the empty record that load used to write): create the
+            // record WITHOUT "json" - a blind merge that cannot erase stages another manager saved meanwhile - then read
+            // it back, so the real write below carries a version and a concurrent save is refused and re-applied (M4).
+            if (!cur && attempt === 0) {
+              await client.writeIfUnchanged(L.id, DEF_ID, link(projectId), { updated: new Date().toISOString().slice(0, 16).replace("T", " "), by: user || "?" });
+              cur = await client.readOne(L.id, DEF_ID, link(projectId));
+            }
             const list = parse(cur && cur.props ? cur.props.json : "");
             let next;
             // a refusal carries the list as it is stored now, so the screen can show it (round 4, L1)

@@ -1,11 +1,14 @@
 // Arsten / MULTIPLAN: ONE Trimble Connect 3D-viewer extension that holds all Arsten / MULTIPLAN tools (user, 13.11.2026).
 //
-// Start screen: a tile per tool (its icon on top, its name below). Tools the user may use are in colour and open on a
-// click; the others are grey with "Нямате достъп". Inside a tool a thin bar has "⌂ Начало" (back to the tiles) and the
-// tool's name. A tool that was opened stays loaded, so going home and back is instant.
+// Start screen: a tile per tool (its icon on top, its name below, a line "for whom" it is). Tools the user may use are in
+// colour, first, and open on a click; the others are grey with "Нямате достъп", after them. Inside a tool a thin bar has
+// "⌂ Начало" (back to the tiles) and the tool's name. A tool that was opened stays loaded, so going home and back is instant.
+// Week 3 A4 (17.11.2026): the tiles are drawn at once (grey until the access check is known; the stages are read as soon
+// as it grants a tool, round 11 L3), the last tool + stage is remembered per user and project ("Продължи: Стомана ·
+// Сграда А"), and the stage picker is skipped for a tool that has no stages. A client sees only their own tiles (L4).
 //
 // How: this page connects to Trimble Connect once and re-exposes that Workspace API to the tools, which run unchanged
-// in iframes inside it (TrimbleConnectWorkspace.expose; Connect events are forwarded to them). Each tool still does its
+// in iframes inside it (TrimbleConnectWorkspace.expose; Connect events are forwarded to the visible one, round 12 H1). Each tool still does its
 // own access check; the tiles follow the same roles (shared/arsten-access.js):
 //   Монолитен бетон (Pour status), Етикети тактове (Pour tags), Бет. елементи (Cast unit tags) -> "execution"   (admin, GC)
 //   Стомана (Assembly status)                                                       -> "assembly"    (admin, GC, designers)
@@ -16,9 +19,9 @@
   "use strict";
   const BASE = "https://arsten2026-cell.github.io/";
   const TOOLS = [
-    { id: "pour", stagesFirst: true, app: "execution", repo: "trimble-connect-pour-status", bg: "Монолитен бетон", en: "Cast-in-place concrete", sub: ["Тактове, снимки, заявки", "Pours, photos, requests"] },
+    { id: "pour", app: "execution", repo: "trimble-connect-pour-status", bg: "Монолитен бетон", en: "Cast-in-place concrete", sub: ["Тактове, снимки, заявки", "Pours, photos, requests"] },
     { id: "accept", app: "acceptance", repo: "trimble-connect-acceptance", bg: "Авторски надзор", en: "Design supervision", sub: ["Приемане на кофраж и армировка", "Formwork and rebar acceptance"] },
-    { id: "steel", stagesFirst: true, app: "assembly", repo: "trimble-connect-assembly-status", bg: "Стомана", en: "Steel", sub: ["Монтаж, доставки, болтове", "Erection, deliveries, bolts"] },
+    { id: "steel", app: "assembly", repo: "trimble-connect-assembly-status", bg: "Стомана", en: "Steel", sub: ["Монтаж, доставки, болтове", "Erection, deliveries, bolts"] },
     { id: "progress", app: "projectStatus", repo: "trimble-connect-project-status", bg: "Статус", en: "Status", sub: ["Напредък на проекта", "Project progress"] },
     { id: "pourtags", app: "execution", repo: "trimble-connect-pour-tags", bg: "Етикети тактове", en: "Pour tags", sub: ["Номера на тактовете", "Pour numbers"] },
     { id: "cutags", app: "execution", repo: "trimble-connect-castunit-tags", bg: "Бетонови елементи", en: "Cast units", sub: ["Марки и армировка", "Marks and rebar"] },
@@ -32,9 +35,13 @@
   // language: the one chosen inside the tools (same site, same storage), Bulgarian by default
   let lang = (() => { try { return localStorage.getItem("arsten.pourStatus.lang") || localStorage.getItem("arsten.acceptance.lang") || "bg"; } catch { return "bg"; } })();
   const L2 = (b, e) => (lang === "bg" ? b : e);
-  const state = { api: null, access: null, tools: TOOLS, allowed: new Set(), view: "home",
-    stages: [], store: null, stageTool: null, current: {}, form: null, busy: false };
+  // accessKnown: false until the access check answers (tiles grey meanwhile); stagesLoaded: the first stages read is done
+  const state = { api: null, access: null, tools: TOOLS, allowed: new Set(), view: "home", accessKnown: false, denied: false,
+    stages: [], store: null, stageTool: null, current: {}, form: null, busy: false, stagesLoaded: false, stagesReady: null,
+    last: null, lastKey: null, opening: false };
   const ST = window.ArstenStages;
+  const HOME = window.ArstenHome;
+  const storage = () => { try { return window.localStorage; } catch { return null; } };
   // only 00_ADMIN and "02.1-EXECUTION PROJECT MANAGER" manage stages, in the "Етапи" module (user, 15.11.2026). Both groups
   // carry the "stages" capability; a Connect project admin outside them does not (the library lock refuses them too).
   const canManage = () => !!(PROBE || (state.access && ArstenAccess.can(state.access, "stages")));
@@ -44,13 +51,73 @@
   const name = (t) => (lang === "bg" ? t.bg : t.en);
 
   let tokens = null;
+  // Connect events to the tools (review round 12, H1). Only the tool on screen gets them live; for a hidden tool the
+  // last event of each type is held (HOME.holdEvent) and replayed once when it is shown again (flushHeld, from render).
+  // "extension.*" (access token, session, settings, commands) still reaches every tool at once. The tools are unchanged.
+  const clients = new Set();   // the tools connected to this page: {dispatcher (their window), origin, identifier}
+  const held = new Map();      // tool id -> Map(event -> last data)
+  /** The tool whose iframe is this client's window, or null (not one of our frames). */
+  function toolOfClient(c) {
+    for (const t of state.tools) {
+      const f = document.getElementById("f_" + t.id);
+      if (f && c && f.contentWindow === c.dispatcher) return t.id;
+    }
+    return null;
+  }
+  function sendTo(c, event, data) {
+    try { TrimbleConnectWorkspace.sendEventToAllClients(event, data, { identifier: c.identifier }); } catch (e) { console.error(e); }
+  }
   function onEvent(event, data) {
     if (tokens) tokens.onEvent(event, data);
-    // every Connect event goes on to the tools (selection, model changes, access token, ...)
-    try { TrimbleConnectWorkspace.sendEventToAllClients(event, data); } catch (e) { console.error(e); }
+    const visible = state.view;
+    for (const c of clients) {
+      const tool = toolOfClient(c);
+      if (HOME.routeEvent(event, tool, visible) === "live") sendTo(c, event, data);
+      else HOME.holdEvent(held.get(tool) || held.set(tool, new Map()).get(tool), event, data);
+    }
+  }
+  /** Replay what a tool missed while hidden, once, now that it is on screen. */
+  function flushHeld(toolId) {
+    const q = held.get(toolId);
+    if (!q || !q.size) return;
+    const evs = HOME.takeEvents(q);
+    for (const c of clients) if (toolOfClient(c) === toolId) for (const [event, data] of evs) sendTo(c, event, data);
   }
 
+  /** "За: администратор, главен изпълнител": the roles that open a tool (the same lists the access check uses). */
+  const forWhom = (t) => (t.for ? t.for[lang === "bg" ? 0 : 1] : HOME.forWhom(toolRoles(t), lang));
+  function renderHome() {
+    const known = state.accessKnown;
+    const okOf = (t) => known && (t.id === "stages" ? canManage() : state.allowed.has(t.id));
+    // until the access check answers, every tile is grey in its usual order; then the usable ones come first.
+    // A client gets only their usable tiles: no names of internal tools (round 11, L4).
+    let tiles = [STAGES_TILE].concat(state.tools);
+    if (known && !PROBE && clientOnly(state.access)) tiles = tiles.filter(okOf);
+    $("tiles").innerHTML = (known ? HOME.orderTiles(tiles, okOf) : tiles).map((t) => {
+      const ok = okOf(t);
+      const icon = t.icon || BASE + t.repo + "/icon.svg";
+      const who = forWhom(t);
+      const tip = ok ? who : known ? L2("Нямате достъп", "No access") + (who ? " – " + who : "") : L2("Проверка на правата…", "Checking access…");
+      return `<button class="tile${ok ? "" : known ? " off" : " off wait"}" data-open="${t.id}"${ok ? "" : " disabled"}${tip ? ` title="${esc(tip)}"` : ""}>
+        <img src="${esc(icon)}" alt=""><b>${esc(name(t))}</b><span>${esc(ok || !known ? t.sub[lang === "bg" ? 0 : 1] : L2("Нямате достъп", "No access"))}</span>${who ? `<i class="for">${esc(who)}</i>` : ""}</button>`;
+    }).join("");
+    // "Продължи: Стомана · Сграда А": the last tool + stage of this user in this project. Grey until access is known,
+    // hidden when the tool is no longer allowed. The stage's current name once the stages are read (a deleted stage:
+    // the tool alone; the click then offers the stage screen).
+    const r = state.last, b = $("btnResume");
+    const rt = r && state.tools.find((x) => x.id === r.tool);
+    if (!rt || (known && !state.allowed.has(rt.id))) b.hidden = true;
+    else {
+      let stageName = r.stageId ? r.stageName : "";
+      if (r.stageId && state.stagesLoaded) { const s = ST.forTool(state.stages, rt.id).find((x) => x.id === r.stageId); stageName = s ? s.name : ""; }
+      b.hidden = false;
+      b.disabled = !known;
+      b.textContent = "▶ " + HOME.resumeLabel(name(rt), stageName, lang);
+    }
+    for (const t of state.tools) if (state.allowed.has(t.id)) versionOf(t);   // ask early, so opening a tool is not delayed
+  }
   function render() {
+    if (state.denied) return;   // the no-access message replaced the page
     const home = state.view === "home", stg = state.view === "stages";
     $("home").hidden = !home;
     $("stages").hidden = !stg;
@@ -58,13 +125,7 @@
     $("frames").hidden = home || stg;   // the start / stage screens get the whole height
     if (stg) renderStages();
     if (home) {
-      $("tiles").innerHTML = [STAGES_TILE].concat(state.tools).map((t) => {
-        const ok = t.id === "stages" ? canManage() : state.allowed.has(t.id);
-        const icon = t.icon || BASE + t.repo + "/icon.svg";
-        return `<button class="tile${ok ? "" : " off"}" data-open="${t.id}"${ok ? "" : ` disabled title="${esc(L2("Нямате достъп", "No access"))}"`}>
-          <img src="${esc(icon)}" alt=""><b>${esc(name(t))}</b><span>${esc(ok ? t.sub[lang === "bg" ? 0 : 1] : L2("Нямате достъп", "No access"))}</span></button>`;
-      }).join("");
-      for (const t of state.tools) if (state.allowed.has(t.id)) versionOf(t);   // ask early, so opening a tool is not delayed
+      renderHome();
     } else {
       const t = state.tools.find((x) => x.id === state.view);
       $("barName").textContent = t ? name(t) : "";
@@ -86,6 +147,7 @@
       }
       if (f) f.hidden = state.view !== t.id;
     }
+    if (state.view !== "home" && state.view !== "stages") flushHeld(state.view);
   }
   // Versioned tool URLs (A4, 16.11.2026): scripts/release.mjs publishes version.json per tool; loading
   // index.html?shell=1&v=<id> means a release is picked up at once instead of after GitHub Pages' ~10 min cache.
@@ -100,9 +162,12 @@
     const timer = setTimeout(() => ctl && ctl.abort(), 2500);
     const entry = { at: Date.now(), p: null };
     entry.p = fetch(BASE + t.repo + "/version.json?nc=" + Date.now(), { cache: "no-store", signal: ctl ? ctl.signal : undefined })
-      .then((r) => (r.ok ? r.json() : null)).then((v) => (v && v.id ? String(v.id) : ""))
+      .then((r) => { if (r.status === 404) entry.missing = true; return r.ok ? r.json() : null; })
+      .then((v) => (v && v.id ? String(v.id) : ""))
       .catch(() => "")
-      .then((id) => { if (!id && versions.get(t.id) === entry) versions.delete(t.id); return id; })   // don't keep failures
+      // keep a found id, and a definite 404 (a tool published without version.json, e.g. Документи: no point asking on
+      // every screen); drop timeouts and other failures so the next screen asks again (round 13 L4)
+      .then((id) => { if (!id && !entry.missing && versions.get(t.id) === entry) versions.delete(t.id); return id; })
       .finally(() => clearTimeout(timer));
     versions.set(t.id, entry);
     return entry.p;
@@ -112,20 +177,60 @@
     const v = await versionOf(t);
     return BASE + t.repo + "/index.html?shell=1" + (v ? "&v=" + encodeURIComponent(v) : "");
   }
-  const STAGES_TILE = { id: "stages", bg: "Етапи", en: "Stages", sub: ["Сгради, модели, изгледи", "Buildings, models, views"], icon: "stages.svg" };
+  // no group names on the start screen (round 11, L4: a client must not read "00_ADMIN")
+  const STAGES_TILE = { id: "stages", bg: "Етапи", en: "Stages", sub: ["Сгради, модели, изгледи", "Buildings, models, views"], icon: "stages.svg",
+    for: ["За: администратор и ръководител изпълнение", "For: admin and the execution project manager"] };
+  /** The roles that open a tool (its own list, or its app kind's list in arsten-access.js). */
+  const toolRoles = (t) => t.roles || (window.ArstenAccess && ArstenAccess.APPS && ArstenAccess.APPS[t.app]) || [];
+  /** May this user open the tool? Any of the user's roles counts (round 11, M4 / L5: a client who is also in 4.1 is a
+   *  designer too, so Авторски надзор opens here exactly when it opens inside the tool). */
+  const toolAllowed = (t, access) => toolRoles(t).some((r) => ArstenAccess.hasRole(access, r));
+  /** A client (no admin / GC / designer role as well) sees only the tiles they can use (round 11, L4). */
+  const clientOnly = (access) => ArstenAccess.hasRole(access, "client") && !["admin", "gc", "designer"].some((r) => ArstenAccess.hasRole(access, r));
   function open(id) {
     if (id !== "home" && !state.allowed.has(id)) return;
     state.view = id;
+    if (id !== "home") remember(id);
     render();
   }
-  /** Start-screen click: Монолитен бетон and Стомана always open on their stages (user, 15.11.2026); the other tools
-   *  only when they have stages, else they open straight away. */
-  function openTool(id) {
+  /** Remember the tool just opened and its stage (none: "Текущ модел" or no stages), per user and project. */
+  function remember(tool) {
+    const s = state.currentStage && state.currentStage[tool];
+    state.last = s ? { tool, stageId: s.id, stageName: s.name } : { tool };
+    HOME.writeLast(storage(), state.lastKey, state.last);
+  }
+  /** Wait (at most ms) for the first stages read, so a click right after the start screen appears still sees the
+   *  stages. Returns false when the user left the start screen meanwhile or another open is running. */
+  async function stagesFirstRead(ms) {
+    if (state.stagesLoaded) return true;
+    if (state.opening) return false;
+    state.opening = true;
+    setStatus(L2("Зареждане на етапите…", "Loading stages…"));
+    try { await Promise.race([state.stagesReady || startStages(), new Promise((r) => setTimeout(r, ms))]); }
+    finally { state.opening = false; setStatus(""); }
+    return state.view === "home";
+  }
+  /** Start-screen click: the stage screen first when the tool has stages (Монолитен бетон and Стомана always did,
+   *  user 15.11.2026; week 3 A4: only when stages exist for that tool), else the tool opens straight away. */
+  async function openTool(id) {
     if (id === "stages") { if (!canManage()) return; showStages(null); return; }
     if (!state.allowed.has(id)) return;
-    const t = state.tools.find((x) => x.id === id) || {};
-    if (t.stagesFirst || ST.forTool(state.stages, id).length) showStages(id);
+    if (!(await stagesFirstRead(4000))) return;
+    if (ST.forTool(state.stages, id).length) showStages(id);
     else open(id);
+  }
+  /** "Продължи": straight into the remembered tool and stage. A stage deleted meanwhile: as a tile click. */
+  async function resume() {
+    const r = state.last;
+    if (!r || !state.accessKnown || !state.allowed.has(r.tool) || state.busy) return;
+    if (!r.stageId) { open(r.tool); return; }
+    if (!(await stagesFirstRead(4000))) return;
+    const s = ST.forTool(state.stages, r.tool).find((x) => x.id === r.stageId);
+    if (!s) { openTool(r.tool); return; }
+    // already the loaded stage of that tool (went home and back): no reload, no camera move
+    if (state.currentStage && state.currentStage[r.tool] && state.currentStage[r.tool].id === s.id) { open(r.tool); return; }
+    state.stageTool = r.tool;
+    applyStage(s);
   }
   /** The stage screen (tool = null: the "Етапи" module). Shown at once with what is known, then refreshed from the
    *  server, so stages another manager added or deleted meanwhile appear (review round 2, #14). */
@@ -134,6 +239,7 @@
     refreshStages().then(() => { if (state.view === "stages" && !state.form) render(); });
   }
   $("tiles").addEventListener("click", (e) => { const b = e.target.closest("button[data-open]"); if (b && !b.disabled) openTool(b.dataset.open); });
+  $("btnResume").onclick = () => resume();
   $("btnHome").onclick = () => open("home");
   $("btnStHome").onclick = () => open("home");
   $("btnStage").onclick = () => showStages(state.view);
@@ -363,8 +469,19 @@
   async function loadStages() {
     const local = PROBE;
     const client = !local && window.PsetApi ? new PsetApi.PsetClient({ region: (state.project && state.project.location) || "europe", getToken: tokens.getToken }) : null;
-    state.store = ST.store({ client, projectId: (state.project && state.project.id) || "probe", user: state.user, local });
+    // writable only with the "stages" capability (round 11, L3): a read-only member never creates or writes anything
+    state.store = ST.store({ client, projectId: (state.project && state.project.id) || "probe", user: state.user, local, canWrite: canManage() });
     await refreshStages();
+  }
+  /** The first stages read, in the background (week 3 A4: it no longer holds back the start screen). Once. */
+  function startStages() {
+    if (!state.stagesReady) {
+      state.stagesReady = loadStages().catch((e) => console.warn(e)).then(() => {
+        state.stagesLoaded = true;
+        if (!state.form && !state.busy && !state.opening) render();   // the bar's "Етапи" button, the resume label
+      });
+    }
+    return state.stagesReady;
   }
   /** Re-read the stages. A result is dropped when a save or delete started or ended meanwhile: it would put the list
    *  from before that save back on screen (review round 3, M9). */
@@ -381,36 +498,63 @@
   async function start(api) {
     state.api = api;
     // the tools connect to this page as if it were Trimble Connect
-    TrimbleConnectWorkspace.expose(api);
+    // onConnect: each tool that connects is remembered, so events can be sent to it alone (round 12, H1)
+    TrimbleConnectWorkspace.expose(Object.assign({}, api, { onConnect: (c) => { if (c && c.identifier) clients.add(c); } }));
     if (PROBE) {
       state.tools = [{ id: "probe", app: "execution", repo: "", bg: "Проба", en: "Probe", sub: ["тест", "test"], local: "test/probe.html", icon: "icon.svg" }].concat(TOOLS.map((t) => Object.assign({}, t, { icon: "icon.svg" })));
       state.allowed = new Set(["probe"]);
-      await loadStages();
-      setStatus(""); render(); return;
-    }
-    tokens = ArstenAccess.tokenGetter(api);
-    const access = await ArstenAccess.check({ api, getToken: tokens.getToken, app: "execution" });
-    state.access = access;
-    if (access.role === "unknown") {
-      // right after "Allow extension" Connect's first token can be refused (401): offer a retry instead of a dead end
-      ArstenAccess.renderDenied(document.body, lang, access);
-      const b = document.createElement("button"); b.className = "retry"; b.textContent = L2("Опитай пак", "Try again"); b.onclick = () => location.reload();
-      document.body.appendChild(b);
+      state.lastKey = HOME.lastKey("probe", "probe");
+      state.last = HOME.readLast(storage(), state.lastKey, state.tools.map((t) => t.id));
+      state.accessKnown = true;
+      setStatus(""); render();
+      startStages();
       return;
     }
-    if (access.role === "none") { ArstenAccess.renderDenied(document.body, lang, access); return; }
-    state.allowed = new Set(TOOLS.filter((t) => (t.roles ? t.roles.includes(access.role) : ArstenAccess.allows(t.app, access.role)) || (t.app === "acceptance" && ArstenAccess.can(access, "approve"))).map((t) => t.id));
-    if (!state.allowed.size) { ArstenAccess.renderDenied(document.body, lang, access); return; }
-    state.project = access.project || (await api.project.getProject());
-    try { const u = access.user || (await api.user.getUser()); state.user = [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email || ""; } catch {}
-    await loadStages();
+    tokens = ArstenAccess.tokenGetter(api);
+    // Week 3 A4: nothing slow before the tiles. The access check (Core API: users, groups, members) starts now and the
+    // start screen stays grey until it answers; who and where come from two quick Workspace calls, for the remembered
+    // tool. The stages are read the moment the access check grants some tool (round 11, L3: never before, so a member
+    // without access reads nothing of the project).
+    setStatus(L2("Проверка на правата…", "Checking access…"));
+    const accessP = ArstenAccess.check({ api, getToken: tokens.getToken, app: "execution" });
+    const whoAmI = (u) => { if (u) { state.user = [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email || ""; state.userId = u.id || u.email || ""; } };
+    try {
+      const [p, u] = await Promise.all([api.project.getProject(), api.user.getUser().catch(() => null)]);
+      if (p && p.id) state.project = p;
+      whoAmI(u);
+    } catch {}
+    const remembered = () => {
+      if (state.lastKey || !state.project || !state.userId) return;
+      state.lastKey = HOME.lastKey(state.project.id, state.userId);
+      state.last = HOME.readLast(storage(), state.lastKey, TOOLS.map((t) => t.id));
+    };
+    remembered();
+    render();
+    const access = await accessP;
+    state.access = access;
+    // The shell is for everyone any of its tools is for (round 11, L1): the denied text names that audience, not the
+    // "execution" list the check ran with. One retry button only: renderDenied's "Провери отново" clears the access
+    // cache and reloads (L2; this also covers Connect's first token being refused right after "Allow extension").
+    const audience = HOME.audience(TOOLS.map(toolRoles), ArstenAccess.ROLE_ORDER);
+    const denied = () => { state.denied = true; ArstenAccess.renderDenied(document.body, lang, Object.assign({}, access, { needs: audience })); };
+    if (access.role === "unknown" || access.role === "none") { denied(); return; }
+    state.allowed = new Set(TOOLS.filter((t) => toolAllowed(t, access)).map((t) => t.id));
+    if (!state.allowed.size) { denied(); return; }
+    if (!state.project) state.project = access.project || (await api.project.getProject());
+    if (!state.userId) { try { whoAmI(access.user || (await api.user.getUser())); } catch {} }
+    remembered();
+    startStages();
+    state.accessKnown = true;
     setStatus("");
     render();
   }
-  window.ArstenShell = { state, TOOLS, open, openTool };
+  window.ArstenShell = { state, TOOLS, open, openTool, resume };
 
   if (window.parent === window) { setStatus("Not inside Trimble Connect. Add this extension to a project and open it from the 3D viewer side panel.", true); return; }
+  // first paint: the tiles at once, grey, while Connect answers (week 3 A4)
+  setStatus(L2("Свързване с Trimble Connect…", "Connecting to Trimble Connect…"));
+  render();
   TrimbleConnectWorkspace.connect(window.parent, onEvent, 30000)
     .then((api) => start(api))
-    .catch((e) => setStatus("Could not connect to Trimble Connect: " + ((e && e.message) || e), true));
+    .catch((e) => { if (!state.denied) $("home").hidden = !state.accessKnown; setStatus("Could not connect to Trimble Connect: " + ((e && e.message) || e), true); });
 })();
