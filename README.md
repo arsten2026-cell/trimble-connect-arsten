@@ -1,7 +1,7 @@
 # Arsten / Multiplan – all tools in one Trimble Connect 3D-viewer panel
 
 A start screen with one tile per tool: Монолитен бетон (Pour status), Авторски надзор (Acceptance), Стомана
-(Assembly status), Статус (Project status), Етикети тактове, Бетонови елементи, Документи and Администрация.
+(Assembly status), Статус (Project status), Дейности (Site activities), Етикети тактове, Бетонови елементи, Документи and Администрация.
 The tiles the user's role may open come first; the others are shown greyed with who they are for. A tile opens the
 existing Arsten / Multiplan panel inside this one ("⌂ Начало" goes back), and the last tool is remembered.
 

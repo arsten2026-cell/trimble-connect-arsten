@@ -23,6 +23,8 @@
     { id: "accept", app: "acceptance", repo: "trimble-connect-acceptance", bg: "Авторски надзор", en: "Design supervision", sub: ["Приемане на кофраж и армировка", "Formwork and rebar acceptance"] },
     { id: "steel", app: "assembly", repo: "trimble-connect-assembly-status", bg: "Стомана", en: "Steel", sub: ["Монтаж, доставки, болтове", "Erection, deliveries, bolts"] },
     { id: "progress", app: "projectStatus", repo: "trimble-connect-project-status", bg: "Статус", en: "Status", sub: ["Напредък на проекта", "Project progress"] },
+    // Дейности (17.11.2026): site activities outside the model, with photos; no stages (it does not use the model)
+    { id: "activities", app: "activities", repo: "trimble-connect-activities", bg: "Дейности", en: "Site activities", sub: ["Работи извън модела, снимки", "Work outside the model, photos"], noStages: true },
     { id: "pourtags", app: "execution", repo: "trimble-connect-pour-tags", bg: "Етикети тактове", en: "Pour tags", sub: ["Номера на тактовете", "Pour numbers"] },
     { id: "cutags", app: "execution", repo: "trimble-connect-castunit-tags", bg: "Бетонови елементи", en: "Cast units", sub: ["Марки и армировка", "Marks and rebar"] },
     // Document control for the general contractor (plugins/arsten-docs, 16.11.2026). Its own access check uses the same
@@ -49,7 +51,7 @@
   // carry the "stages" capability; a Connect project admin outside them does not (the library lock refuses them too).
   const canManage = () => !!(PROBE || (state.access && ArstenAccess.can(state.access, "stages")));
   const canEdit = () => !!(state.store && state.store.writable && canManage());
-  const STAGE_TOOLS = () => state.tools.filter((t) => t.id !== "stages" && (PROBE || !t.local));
+  const STAGE_TOOLS = () => state.tools.filter((t) => t.id !== "stages" && !t.noStages && (PROBE || !t.local));
   const setStatus = (t, bad) => { const s = $("status"); s.hidden = !t; s.textContent = t || ""; s.className = "status" + (bad ? " bad" : ""); };
   const name = (t) => (lang === "bg" ? t.bg : t.en);
 
