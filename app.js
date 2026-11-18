@@ -300,8 +300,20 @@
     if (id === "stages") { if (!canManage()) return; showStages(null); return; }
     if (!state.allowed.has(id)) return;
     if (!(await stagesFirstRead(4000))) return;
-    if (ST.forTool(state.stages, id).length) showStages(id);
-    else open(id);
+    const list = ST.forTool(state.stages, id);
+    if (!list.length) { open(id); return; }
+    // the stage whose models are what the viewer has loaded now: open the tool in it (live test 18.11.2026: every tool
+    // asked for the stage again right after it was loaded); "Смени етапа" inside the tool still changes it
+    let models = null;
+    try { models = await Promise.race([state.api.viewer.getModels(), new Promise((r) => setTimeout(() => r(null), 1500))]); } catch { models = null; }
+    const hit = models ? ST.loadedStage(list, models) : null;
+    if (hit) {
+      state.current[id] = hit.name;
+      (state.currentStage || (state.currentStage = {}))[id] = hit;
+      open(id);
+      return;
+    }
+    showStages(id);
   }
   /** "Продължи": straight into the remembered tool and stage. A stage deleted meanwhile: as a tile click. */
   async function resume() {

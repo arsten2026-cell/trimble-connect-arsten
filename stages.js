@@ -115,6 +115,18 @@
       missing: (stage.models || []).filter((m) => !byId.has(m.id)),
     };
   }
+  /** Live test 18.11.2026: the stage of `list` whose models are exactly what the viewer has loaded now (nothing to load,
+   *  unload or find), or null. A tile click then opens the tool at once instead of asking for the stage again (each tool
+   *  asked, even right after the stage was loaded for another tool). A saved-view stage never counts (its camera and
+   *  filters cannot be compared). */
+  function loadedStage(list, models) {
+    for (const s of list || []) {
+      if (s.kind === "view" || !(s.models || []).length) continue;
+      const p = plan(s, models);
+      if (!p.load.length && !p.unload.length && !p.missing.length) return s;
+    }
+    return null;
+  }
   /**
    * Folder tree of the project's model files. folders: [{id, name, parent}], files: [{id, name, parent, ...}].
    * Only folders that contain a model file (at any depth) are kept; folders first, both sorted by name.
@@ -308,5 +320,5 @@
     };
   }
 
-  return { LIB_NAMES, DEF_ID, HISTORY_MAX, HISTORY_BYTES, HISTORY_CHARS, utf8Len, historyTooBig, fmtUpdated, parseHistory, pushHistory, describeVersion, link, definition, parse, forTool, toolsOf, newId, plan, tree, describe, store };
+  return { LIB_NAMES, DEF_ID, HISTORY_MAX, HISTORY_BYTES, HISTORY_CHARS, utf8Len, historyTooBig, fmtUpdated, parseHistory, pushHistory, describeVersion, link, definition, parse, forTool, toolsOf, newId, plan, loadedStage, tree, describe, store };
 });
