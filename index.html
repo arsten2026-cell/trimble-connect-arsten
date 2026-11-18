@@ -13,7 +13,6 @@
   /* start screen */
   .home { flex:1; overflow:auto; padding:12px; }
   .home h1 { font-size:15px; margin:0 0 12px; font-weight:600; }
-  .home h1 b { color:var(--accent); }
   .tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(118px, 1fr)); gap:8px; }
   .tile { display:flex; flex-direction:column; align-items:center; gap:6px; padding:12px 8px 10px; background:#fff; border:1px solid var(--line);
     font:inherit; color:var(--ink); cursor:pointer; border-radius:0; text-align:center; }
@@ -33,7 +32,30 @@
     background:var(--ink); color:#fff; border:1px solid var(--ink); border-left:4px solid var(--accent); border-radius:0; cursor:pointer;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .resume:disabled { background:#f0eee9; color:#a7a39a; border-color:var(--line); border-left-color:var(--line); cursor:default; }
-  @media (pointer: coarse) { .resume { min-height:44px; font-size:14px; } .tile { min-height:44px; } }
+  @media (pointer: coarse) { .resume { min-height:44px; font-size:14px; } .tile { min-height:44px; }
+    /* sweep 18.11.2026: the bar the user taps most was ~22 px high on phones */
+    .bar button, .sthead button, .form button, .late button { min-height:40px; font-size:14px; padding:6px 12px; }
+    .hhead select { min-height:40px; font-size:14px; } }
+  /* start screen header: title + BG/EN switch (sweep 18.11.2026) */
+  .hhead { display:flex; align-items:center; gap:8px; margin:0 0 12px; }
+  .hhead h1 { margin:0; flex:1; min-width:0; }
+  .hhead select { font:inherit; font-size:12px; padding:2px 4px; border:1px solid var(--line); background:#fff; border-radius:0; }
+  /* "Как се работи": short help on the start screen, one topic per tile (sweep 18.11.2026) */
+  .hlink { font:inherit; font-size:12px; color:var(--ink); background:none; border:0; padding:4px 0; cursor:pointer; text-decoration:underline; white-space:nowrap; }
+  .help { background:#fff; border:1px solid var(--line); border-left:4px solid var(--accent); padding:6px 10px; margin:0 0 10px; font-size:12.5px; }
+  .help details { border-bottom:1px solid var(--line); padding:4px 0; }
+  .help details:last-of-type { border-bottom:0; }
+  .help summary { cursor:pointer; font-weight:600; padding:4px 0; }
+  .help ol { margin:4px 0 4px; padding-left:20px; }
+  .help li { margin:2px 0; }
+  .help .more { color:var(--muted); font-size:11.5px; margin-top:6px; }
+  @media (pointer: coarse) { .hlink { min-height:40px; font-size:14px; } .help summary { min-height:36px; } }
+  /* a tool frame that did not connect within 20 s (sweep 18.11.2026) */
+  .late { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:6px 8px; background:#fff; border-bottom:1px solid var(--line); color:var(--bad); font-size:12.5px; }
+  .late button { font:inherit; font-size:12px; padding:3px 9px; border:1px solid var(--ink); background:var(--ink); color:#fff; cursor:pointer; border-radius:0; }
+  /* "Копирай диагностика": a small text link at the bottom of the start screen, not a main action (sweep 18.11.2026) */
+  .foot { padding:4px 12px 8px; text-align:right; }
+  .foot .link { font:inherit; font-size:12px; color:var(--muted); background:none; border:0; padding:4px 0; cursor:pointer; text-decoration:underline; }
   /* bar inside a tool */
   .bar { display:flex; align-items:center; gap:8px; padding:4px 8px; background:#fff; border-bottom:1px solid var(--line); }
   .bar button { font:inherit; font-size:12px; padding:3px 9px; border:1px solid var(--ink); background:var(--ink); color:#fff; cursor:pointer; border-radius:0; }
@@ -78,10 +100,12 @@
 </style>
 </head>
 <body>
-<button type="button" class="small secondary" data-arsten-diag style="float:right;margin-left:6px">Копирай диагностика</button>
 <div id="status" class="status">Trimble Connect…</div>
 <div class="home" id="home" hidden>
-  <h1><b>Arsten</b> / Multiplan</h1>
+  <div class="hhead"><h1>Arsten / Multiplan</h1><!-- one name for both companies, none first (sweep 18.11.2026) -->
+    <button type="button" class="hlink" id="btnHelp" aria-expanded="false" aria-controls="help">Как се работи</button>
+    <select id="selLang" title="Language / Език"><option value="bg">BG</option><option value="en">EN</option></select></div>
+  <div class="help" id="help" hidden></div>
   <button class="resume" id="btnResume" hidden></button>
   <div class="tiles" id="tiles"></div>
 </div>
@@ -92,15 +116,17 @@
 </div>
 <div class="bar" id="bar" hidden><button id="btnHome">⌂ Начало</button><span class="nm" id="barName"></span><span class="stg" id="barStage"></span>
   <button class="sec" id="btnStage">Етапи</button><span class="brand">Arsten / Multiplan</span></div>
+<div class="late" id="late" hidden><span id="lateText">Инструментът не се зареди.</span> <button id="btnRetry">Опитай пак</button></div>
 <div class="frames" id="frames"></div>
+<div class="foot" id="foot"><button type="button" class="link" data-arsten-diag>Копирай диагностика</button></div>
 <script src="https://cdn.jsdelivr.net/npm/trimble-connect-workspace-api@0.3.38/dist/iife/trimbleconnect.workspace.api.js" integrity="sha384-lFiNt/56q6HnUNbuy0WHO3NP6BkQjY4EH8+5eELYVfnhkB42snRTmSa3UOAlX9gg" crossorigin="anonymous"></script>
 <script src="arsten-perf.js?v=21f7454938"></script>
 <script src="arsten-diag.js?v=bb0c6351fe"></script>
-<script src="arsten-i18n.js?v=de006467e2"></script>
-<script src="arsten-access.js?v=253829d007"></script>
-<script src="psetapi.js?v=f5bc3d57fb"></script>
+<script src="arsten-i18n.js?v=c58f01c9fc"></script>
+<script src="arsten-access.js?v=fad565fcbe"></script>
+<script src="psetapi.js?v=970df94af2"></script>
 <script src="stages.js?v=c5f13f90f8"></script>
-<script src="home.js?v=0e614935ed"></script>
-<script src="app.js?v=0cb0214c5e"></script>
+<script src="home.js?v=b9162c6d32"></script>
+<script src="app.js?v=5dc5ca62eb"></script>
 </body>
 </html>

@@ -35,15 +35,15 @@
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   // language: one setting for all tools (A10, shared/arsten-i18n.js: localStorage "arsten.lang", same site, same storage).
-  // The shell has no switch of its own: it follows the tools (storage event below); with nothing chosen yet, the Connect
-  // user's language, else Bulgarian.
+  // The shell follows the tools (storage event below) and has its own BG/EN switch on the start screen (sweep 18.11.2026);
+  // with nothing chosen yet, the Connect user's language, else Bulgarian.
   const I18N = window.ArstenI18n;
   let lang = I18N ? I18N.getLang() : (() => { try { return localStorage.getItem("arsten.pourStatus.lang") || localStorage.getItem("arsten.acceptance.lang") || "bg"; } catch { return "bg"; } })();
   const L2 = (b, e) => (lang === "bg" ? b : e);
   // accessKnown: false until the access check answers (tiles grey meanwhile); stagesLoaded: the first stages read is done
   const state = { api: null, access: null, tools: TOOLS, allowed: new Set(), view: "home", accessKnown: false, denied: false,
     stages: [], store: null, stageTool: null, current: {}, form: null, busy: false, stagesLoaded: false, stagesReady: null,
-    last: null, lastKey: null, opening: false };
+    last: null, lastKey: null, opening: false, helpOpen: false };
   const ST = window.ArstenStages;
   const HOME = window.ArstenHome;
   const storage = () => { try { return window.localStorage; } catch { return null; } };
@@ -61,6 +61,7 @@
   // "extension.*" (access token, session, settings, commands) still reaches every tool at once. The tools are unchanged.
   const clients = new Set();   // the tools connected to this page: {dispatcher (their window), origin, identifier}
   const held = new Map();      // tool id -> Map(event -> last data)
+  const stageLoaded = new Set();   // tools whose stage applyStage just loaded; their next replay is marked (flushHeld)
   /** The tool whose iframe is this client's window, or null (not one of our frames). */
   function toolOfClient(c) {
     for (const t of state.tools) {
@@ -77,15 +78,40 @@
     const visible = state.view;
     for (const c of clients) {
       const tool = toolOfClient(c);
-      if (HOME.routeEvent(event, tool, visible) === "live") sendTo(c, event, data);
-      else HOME.holdEvent(held.get(tool) || held.set(tool, new Map()).get(tool), event, data);
+      const to = HOME.routeEvent(event, tool, visible);   // "drop" for a window that is not one of our frames (sweep 18.11.2026)
+      if (to === "live") sendTo(c, event, data);
+      else if (to === "hold") HOME.holdEvent(held.get(tool) || held.set(tool, new Map()).get(tool), event, data);
     }
+  }
+  // Only our own tool frames may use the API (sweep 18.11.2026, see HOME.clientGate): the tools are served from BASE's
+  // origin; the local probe (test/host.html on localhost) from this page's own origin.
+  const toolOrigins = () => [new URL(BASE).origin].concat(PROBE ? [location.origin] : []);
+  // A tool frame that never connects (no signal on site, page timeout) is noticed after 20 s and offers "Опитай пак"
+  // (sweep 18.11.2026); before, it stayed blank for the session and only reloading the extension helped.
+  const watch = HOME.loadWatch({ ms: 20000, onLate: (id) => { if (state.view === id) render(); } });
+  const gate = HOME.clientGate({ toolOf: toolOfClient, get origins() { return toolOrigins(); }, clients,
+    remove: (c) => TrimbleConnectWorkspace.removeClient(c),
+    onAccept: (id) => { const was = watch.late(id); watch.connected(id); if (was && state.view === id) render(); } });
+  /** "Опитай пак": the dead frame, its clients and its held events go; render() creates it again with a fresh URL. */
+  function retryTool(id) {
+    const f = document.getElementById("f_" + id);
+    if (f) {
+      for (const c of [...clients]) if (c.dispatcher === f.contentWindow) { clients.delete(c); try { TrimbleConnectWorkspace.removeClient(c); } catch {} }
+      f.remove();
+    }
+    held.delete(id);
+    versions.delete(id);   // ask version.json again: the first answer may have been the failed one
+    watch.stop(id);
+    render();
   }
   /** Replay what a tool missed while hidden, once, now that it is on screen. */
   function flushHeld(toolId) {
     const q = held.get(toolId);
-    if (!q || !q.size) return;
-    const evs = HOME.takeEvents(q);
+    // a stage the shell loaded itself: the replay says so, so the tool reads after a short pause instead of waiting
+    // out Connect's 1.5-3 s "quiet" while the old stage's data stays on screen (sweep 18.11.2026, HOME.markStageLoaded)
+    const staged = stageLoaded.delete(toolId);
+    if (!staged && (!q || !q.size)) return;
+    const evs = staged ? HOME.markStageLoaded(HOME.takeEvents(q), toolId) : HOME.takeEvents(q);
     for (const c of clients) if (toolOfClient(c) === toolId) for (const [event, data] of evs) sendTo(c, event, data);
   }
 
@@ -120,6 +146,25 @@
       b.textContent = "▶ " + HOME.resumeLabel(name(rt), stageName, lang);
     }
     for (const t of state.tools) if (state.allowed.has(t.id)) versionOf(t);   // ask early, so opening a tool is not delayed
+    prefetch();
+    renderHelp();
+  }
+  /** "Как се работи" (sweep 18.11.2026): the handbook's everyday tasks in short, one topic per tile the user can open
+   *  (HOME.helpTopics); a client gets only the client topic. Open topics stay open across a language switch. */
+  function renderHelp() {
+    const btn = $("btnHelp"), box = $("help");
+    btn.textContent = L2("Как се работи", "How to");
+    btn.setAttribute("aria-expanded", state.helpOpen ? "true" : "false");
+    box.hidden = !state.helpOpen;
+    if (!state.helpOpen) return;
+    const client = !PROBE && state.accessKnown && clientOnly(state.access);
+    const allowed = PROBE ? state.tools.map((t) => t.id) : [...state.allowed];
+    const topics = HOME.helpTopics(allowed, { client, manage: state.accessKnown && canManage(), lang });
+    const was = new Set([...box.querySelectorAll("details[open]")].map((d) => d.dataset.topic));
+    box.innerHTML = (topics.length
+      ? topics.map((h) => `<details data-topic="${esc(h.id)}"${was.has(h.id) || topics.length === 1 ? " open" : ""}><summary>${esc(h.title)}</summary><ol>${h.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ol></details>`).join("")
+      : `<div class="more">${esc(state.accessKnown ? L2("Няма инструменти за вас в този проект.", "No tools for you in this project.") : L2("Проверка на правата…", "Checking access…"))}</div>`)
+      + (client ? "" : `<div class="more">${esc(L2("Целият наръчник: НАРЪЧНИК (PDF) в главната папка на проекта, Файлове.", "Full guide: НАРЪЧНИК (PDF) in the project's root folder, Files."))}</div>`);
   }
   function render() {
     if (state.denied) return;   // the no-access message replaced the page
@@ -137,7 +182,8 @@
       $("btnHome").textContent = "⌂ " + L2("Начало", "Home");
       const cur = t && state.current[t.id];
       $("barStage").textContent = cur ? "· " + cur : "";
-      $("btnStage").textContent = cur ? L2("Смени", "Change") : L2("Етапи", "Stages");
+      // "Смени етапа": a bare "Смени" did not say what it changes (sweep 18.11.2026)
+      $("btnStage").textContent = cur ? L2("Смени етапа", "Change stage") : L2("Етапи", "Stages");
       $("btnStage").hidden = !t || !ST.forTool(state.stages, t.id).length;
     }
     for (const t of state.tools) {
@@ -148,10 +194,20 @@
         f.allow = "camera; clipboard-write";
         $("frames").appendChild(f);
         const frame = f;
-        toolUrl(t).then((u) => { if (!frame.getAttribute("src")) frame.src = u; });
+        toolUrl(t).then((u) => { if (!frame.getAttribute("src") && frame.isConnected) { frame.src = u; watch.start(t.id); } });
       }
       if (f) f.hidden = state.view !== t.id;
     }
+    // the tool on screen did not connect within 20 s: say so and offer a retry (sweep 18.11.2026)
+    const late = state.view !== "home" && state.view !== "stages" && watch.late(state.view);
+    $("late").hidden = !late;
+    if (late) {
+      $("lateText").textContent = L2("Инструментът не се зареди.", "The tool did not load.");
+      $("btnRetry").textContent = L2("Опитай пак", "Try again");
+    }
+    // "Копирай диагностика" only on the start screen, at the bottom: inside a tool the tool has its own (sweep 18.11.2026)
+    $("foot").hidden = state.view !== "home";
+    if ($("selLang").value !== lang) $("selLang").value = lang;
     if (state.view !== "home" && state.view !== "stages") flushHeld(state.view);
   }
   // Versioned tool URLs (A4, 16.11.2026): scripts/release.mjs publishes version.json per tool; loading
@@ -168,7 +224,7 @@
     const entry = { at: Date.now(), p: null };
     entry.p = fetch(BASE + t.repo + "/version.json?nc=" + Date.now(), { cache: "no-store", signal: ctl ? ctl.signal : undefined })
       .then((r) => { if (r.status === 404) entry.missing = true; return r.ok ? r.json() : null; })
-      .then((v) => (v && v.id ? String(v.id) : ""))
+      .then((v) => { if (v && v.id && v.files) entry.v = { id: String(v.id), files: v.files }; return v && v.id ? String(v.id) : ""; })
       .catch(() => "")
       // keep a found id, and a definite 404 (a tool published without version.json, e.g. Документи: no point asking on
       // every screen); drop timeouts and other failures so the next screen asks again (round 13 L4)
@@ -176,6 +232,29 @@
       .finally(() => clearTimeout(timer));
     versions.set(t.id, entry);
     return entry.p;
+  }
+  // Prefetch (sweep 18.11.2026): the remembered tool's index.html and scripts (every allowed tool on Wi-Fi) go into the
+  // HTTP cache while the user is still on the start screen, at the exact ?v=<hash> URLs from version.json, so the tap
+  // does not first wait for ~0.5 MB. <link rel=prefetch> only: no frame, no tool code runs, nothing is read before it is
+  // opened. Each URL once per page.
+  const prefetched = new Set();
+  function prefetch() {
+    if (PROBE || !state.accessKnown) return;
+    const conn = typeof navigator !== "undefined" ? navigator.connection : undefined;
+    for (const id of HOME.prefetchTools(state.last && state.last.tool, [...state.allowed], conn)) {
+      const t = state.tools.find((x) => x.id === id);
+      if (!t || t.local) continue;
+      versionOf(t).then(() => {
+        const hit = versions.get(t.id);
+        for (const u of HOME.prefetchUrls(BASE, t.repo, hit && hit.v)) {
+          if (prefetched.has(u)) continue;
+          prefetched.add(u);
+          const l = document.createElement("link");
+          l.rel = "prefetch"; l.href = u;   // no "as": a plain HTTP-cache fill, whatever the frame later uses it as
+          document.head.appendChild(l);
+        }
+      }).catch(() => {});
+    }
   }
   async function toolUrl(t) {
     if (t.local) return t.local;
@@ -248,6 +327,15 @@
   $("btnHome").onclick = () => open("home");
   $("btnStHome").onclick = () => open("home");
   $("btnStage").onclick = () => showStages(state.view);
+  $("btnRetry").onclick = () => { if (state.view !== "home" && state.view !== "stages") retryTool(state.view); };
+  // BG / EN on the start screen too (sweep 18.11.2026): before, the language could be changed only inside a tool.
+  // setLang writes "arsten.lang", so the tools opened afterwards start in it.
+  $("btnHelp").onclick = () => { state.helpOpen = !state.helpOpen; renderHelp(); };
+  $("selLang").onchange = (e) => {
+    lang = I18N ? I18N.setLang(e.target.value) : (e.target.value === "en" ? "en" : "bg");
+    render();
+    if (window.ArstenDiag && ArstenDiag.relabel) ArstenDiag.relabel();
+  };
 
   // ---------- stages ----------
   function renderStages() {
@@ -351,6 +439,7 @@
         + failed.map((m) => m.name).join(", ") : "", !!failed.length);
       state.current[tool] = stage.name;
       (state.currentStage || (state.currentStage = {}))[tool] = stage;
+      stageLoaded.add(tool);
       open(tool);
     } catch (e) { setStatus(L2("Етапът не можа да се зареди: ", "Could not load the stage: ") + ((e && e.message) || e), true); }
     finally { state.busy = false; }
@@ -378,36 +467,35 @@
     try { inViewer = (await api.viewer.getModels()) || []; } catch {}
     if (PROBE || !state.project) return inViewer.filter((m) => ["loaded", "assimilated", "unloaded"].includes(m.state));
     const base = ArstenAccess.coreBase(state.project.location);
-    const items = [];
-    let url = `${base}files/fs/snapshot?projectId=${encodeURIComponent(state.project.id)}`;
-    for (let guard = 0; url && guard < 50; guard++) {
-      let res = null;
-      for (let attempt = 0; attempt < 2 && !res; attempt++) {
-        const r = await fetch(url, { headers: { Authorization: "Bearer " + (await tokens.getToken(attempt > 0)) } });
-        if (r.status === 401 && attempt === 0) continue;
-        if (!r.ok) throw new Error("files/fs/snapshot: " + r.status);
-        res = await r.json();
-      }
-      if (Array.isArray(res)) { items.push(...res); break; }
-      items.push(...((res && res.items) || []));
-      url = res && res.next ? (/^https?:/.test(res.next) ? res.next : base + String(res.next).replace(/^\/+/, "")) : null;
-    }
+    // 30 s per page, 429 / 503 retried (sweep 18.11.2026): a stuck snapshot throws, and startForm falls back
+    const items = await HOME.readSnapshot(base, state.project.id, tokens.getToken);
     const byId = new Map(items.map((x) => [x.id, x]));
     const state0 = new Map(inViewer.map((m) => [m.id, m.state]));
     const models = items.filter((x) => String(x.tp).toUpperCase() === "FILE" && !x.del && MODEL_EXT.test(x.nm || ""))
       .map((x) => ({ id: x.id, name: x.nm, parent: x.pid, folder: (byId.get(x.pid) || {}).nm || "", state: state0.get(x.id) || "unloaded" }));
     models.folders = items.filter((x) => String(x.tp).toUpperCase() === "FOLDER" && !x.del).map((x) => ({ id: x.id, name: x.nm, parent: x.pid }));
+    models.partial = items.complete === false;   // a "next" page that was not followed (sweep 18.11.2026)
     return models;
   }
 
   // form: name, models (tick boxes) or a saved view
   async function startForm(stage) {
     const api = state.api;
-    let models = [], views = [];
-    try { models = await projectModels(); }
-    catch (e) { console.warn(e); try { models = ((await api.viewer.getModels()) || []).filter((m) => ["loaded", "assimilated", "unloaded"].includes(m.state)); } catch {} }
+    let models = [], views = [], partial = false;
+    try { models = await projectModels(); partial = models.partial ? "some" : false; }
+    catch (e) {
+      console.warn(e);
+      // sweep 18.11.2026: say so, and keep this stage's own models in the list (ticked), so a save after a slow /
+      // refused snapshot does not drop the models that are simply not in the viewer right now
+      partial = true;
+      try { models = ((await api.viewer.getModels()) || []).filter((m) => ["loaded", "assimilated", "unloaded"].includes(m.state)); } catch {}
+    }
+    if (partial) {
+      const have = new Set(models.map((m) => m.id));
+      for (const m of (stage && stage.models) || []) if (!have.has(m.id)) models.push({ id: m.id, name: m.name, state: "unloaded" });
+    }
     try { views = (await api.view.getViews()) || []; } catch {}
-    state.form = { stage, models, views, kind: (stage && stage.kind) || "models", tools: stage ? ST.toolsOf(stage) : [] };
+    state.form = { stage, models, views, partial, kind: (stage && stage.kind) || "models", tools: stage ? ST.toolsOf(stage) : [] };
     renderForm();
   }
   function renderForm() {
@@ -425,7 +513,7 @@
       <div class="row"><label><input type="radio" name="fKind" value="models"${f.kind === "models" ? " checked" : ""}> ${esc(L2("Модел(и)", "Model(s)"))}</label>
         <label><input type="radio" name="fKind" value="view"${f.kind === "view" ? " checked" : ""}> ${esc(L2("Изглед", "View"))}</label></div>
       ${f.kind === "models"
-        ? `<label>${esc(L2("Модели (папките на проекта)", "Models (project folders)"))}</label><div class="opts tree">${modelTree(f, chosen) || esc(L2("Няма модели.", "No models."))}</div>
+        ? `<label>${esc(L2("Модели (папките на проекта)", "Models (project folders)"))}</label>${f.partial ? `<div class="sub bad">${esc(f.partial === "some" ? L2("Списъкът може да е непълен.", "The list may be incomplete.") : L2("Показани са само моделите във визуализатора.", "Only the models in the viewer are shown."))}</div>` : ""}<div class="opts tree">${modelTree(f, chosen) || esc(L2("Няма модели.", "No models."))}</div>
            ${gone.length ? `<div class="sub bad">${esc(L2("Липсват в проекта (ще отпаднат при запис): ", "No longer in the project (dropped on save): ") + gone.map((m) => m.name).join(", "))}</div>` : ""}`
         : `<label>${esc(L2("Изглед", "View"))}</label><select id="fView">${f.views.map((v) => `<option value="${esc(v.id)}"${s.viewId === v.id ? " selected" : ""}>${esc(v.name)}</option>`).join("")}</select>
            ${f.views.length ? "" : `<div class="sub">${esc(L2("Няма запазени изгледи в проекта.", "No saved views in the project."))}</div>`}`}
@@ -567,8 +655,9 @@
   async function start(api) {
     state.api = api;
     // the tools connect to this page as if it were Trimble Connect
-    // onConnect: each tool that connects is remembered, so events can be sent to it alone (round 12, H1)
-    TrimbleConnectWorkspace.expose(Object.assign({}, api, { onConnect: (c) => { if (c && c.identifier) clients.add(c); } }));
+    // onConnect: each tool that connects is remembered, so events can be sent to it alone (round 12, H1). Only our own
+    // tool frames are kept; onRequest refuses every call of any other window (sweep 18.11.2026: token theft).
+    TrimbleConnectWorkspace.expose(Object.assign({}, api, { onConnect: gate.onConnect, onRequest: gate.onRequest }));
     if (PROBE) {
       state.tools = [{ id: "probe", app: "execution", repo: "", bg: "Проба", en: "Probe", sub: ["тест", "test"], local: "test/probe.html", icon: "icon.svg" }].concat(TOOLS.map((t) => Object.assign({}, t, { icon: "icon.svg" })));
       state.allowed = new Set(["probe"]);
@@ -619,10 +708,15 @@
     // this user can open a tool that uses a stage. A summary-only client (Статус without admin / GC) uses none: no read,
     // and every tile opens straight away, as with no stages.
     const summaryOnly = !["admin", "gc"].some((r) => ArstenAccess.hasRole(access, r));
-    if (HOME.needsStages([...state.allowed], { manage: canManage(), noStage: summaryOnly ? ["progress"] : [] })) startStages();
+    const needsStages = HOME.needsStages([...state.allowed], { manage: canManage(), noStage: summaryOnly ? ["progress"] : [] });
+    if (needsStages) startStages();
     else { state.stages = []; state.stagesLoaded = true; state.stagesReady = Promise.resolve(); }
     state.accessKnown = true;
     setStatus("");
+    // one usable tool and no stage screen (a client: only Статус): straight into it instead of a start screen with one
+    // tile to tap on every visit (sweep 18.11.2026). "⌂ Начало" still leads back to the tiles.
+    const solo = HOME.soloTool(state.allowed, { manage: canManage(), stages: needsStages });
+    if (solo && state.view === "home") { open(solo); return; }
     render();
   }
   window.ArstenShell = { state, TOOLS, open, openTool, resume };
